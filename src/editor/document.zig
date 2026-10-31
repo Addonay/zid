@@ -20,6 +20,9 @@ pub const Document = struct {
     /// Keep such files inspectable without allowing edits to invisible bytes.
     preview_only: bool = false,
     disk_identity: ?DiskIdentity = null,
+    large: ?LargeState = null,
+
+    pub const LargeState = struct { file: @import("../text/large_file.zig").LargeFile, io: std.Io, offset: u64 = 0, failure: ?anyerror = null };
 
     pub const max_line_bytes = 64 * 1024;
     /// Bounds retained undo versions, not total text storage: the append-only add
@@ -72,11 +75,23 @@ pub const Document = struct {
         };
         return self;
     }
+    pub fn initLarge(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Document {
+        var file = try @import("../text/large_file.zig").LargeFile.open(allocator, io, std.Io.Dir.cwd(), path);
+        errdefer file.deinit(io);
+        var self = try init(allocator, "", path);
+        self.large = .{ .file = file, .io = io };
+        self.preview_only = true;
+        return self;
+    }
+    pub fn largeNavigate(self: *Document, offset: u64) void {
+        if (self.large) |*large| large.offset = @min(offset, large.file.size());
+    }
     fn validateText(text: []const u8) !void {
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
         if (std.mem.indexOfScalar(u8, text, 0) != null) return error.BinaryFile;
     }
     pub fn deinit(self: *Document) void {
+        if (self.large) |*large| large.file.deinit(large.io);
         for (self.history.items) |edit| self.freeEdit(edit);
         self.history.deinit(self.allocator);
         if (self.path) |path| self.allocator.free(path);
@@ -159,6 +174,7 @@ pub const Document = struct {
         try self.applyEdit(start, end, text, false);
     }
     fn applyEdit(self: *Document, start: usize, end: usize, text: []const u8, typing: bool) !void {
+        if (self.large != null) return error.ReadOnlyLargeFile;
         if (self.preview_only) return error.ReadOnlyLongLinePreview;
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
         if (std.mem.indexOfScalar(u8, text, 0) != null) return error.BinaryFile;
@@ -224,6 +240,7 @@ pub const Document = struct {
         if (self.history_index > 0) self.history.items[self.history_index - 1].typing = false;
     }
     pub fn backspace(self: *Document) !void {
+        if (self.large != null) return error.ReadOnlyLargeFile;
         const previous_anchor = self.anchor;
         errdefer self.anchor = previous_anchor;
         if (self.cursor == self.anchor and self.cursor > 0) {
@@ -233,6 +250,7 @@ pub const Document = struct {
         try self.insert("");
     }
     pub fn deleteForward(self: *Document) !void {
+        if (self.large != null) return error.ReadOnlyLargeFile;
         const previous_anchor = self.anchor;
         errdefer self.anchor = previous_anchor;
         if (self.cursor == self.anchor) {
@@ -242,6 +260,7 @@ pub const Document = struct {
         try self.insert("");
     }
     pub fn undo(self: *Document) !void {
+        if (self.large != null) return error.ReadOnlyLargeFile;
         self.breakTypingGroup();
         if (self.history_index == 0) return;
         const edit = self.history.items[self.history_index - 1];
@@ -252,6 +271,7 @@ pub const Document = struct {
         self.revision = edit.before_revision;
     }
     pub fn redo(self: *Document) !void {
+        if (self.large != null) return error.ReadOnlyLargeFile;
         if (self.history_index == self.history.items.len) return;
         const edit = self.history.items[self.history_index];
         self.buffer.setRoot(edit.after);

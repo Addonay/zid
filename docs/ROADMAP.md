@@ -47,7 +47,4 @@ clipboard, history commands, safe-close/Save As flow, JSONC settings/keymaps, so
 built-in themes and Zed default fonts/icons, incremental lexers.
 
 M2 has integrated the persistent-tree Document and word-coalesced undo, capped at
-1000 entries with save/navigation boundaries. Background indexing, large-file mode,
-long-line windowing, a history byte budget, add-buffer compaction and performance targets remain.
-The existing application remains capped at 32 MiB, with read-only previews for lines
-over 64 KiB. Later milestone features have not been implemented by this shell work.
+1000 entries with save/navigation boundaries. Files above 32 MiB open in a separate read-only byte viewer with bounded positional reads, incremental indexing and byte/percentage navigation. Indexing currently runs in 64 KiB main-thread steps, so slow I/O can stall a frame. The viewer replaces non-ASCII and control bytes, uses byte-window scrolling rather than normal line scrolling, and has no selection or copy; it is not yet the complete large-file editor experience. Indexed line lookup is available; no index scan is required before the first view. A history byte budget, add-buffer compaction, worker indexing and performance targets remain. Memory-backed files with lines over 64 KiB remain read-only previews. Later milestone features have not been implemented by this shell work.

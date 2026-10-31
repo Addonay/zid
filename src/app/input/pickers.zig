@@ -58,6 +58,7 @@ pub const GoToLine = struct {
     restore_cursor: usize = 0,
     restore_anchor: usize = 0,
     restore_scroll: usize = 0,
+    restore_large_offset: u64 = 0,
 };
 
 pub const max_results = 200;

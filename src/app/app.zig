@@ -223,7 +223,8 @@ pub const App = struct {
         while (self.running) {
             const now = sdl.timer.getMillisecondsSinceInit();
             const blink = self.focused and self.settings.cursor_blink and self.dialog == .none and !self.panel_focus;
-            const wait: u31 = if (blink) @intCast(500 - @min(500, now - self.last_blink)) else 1000;
+            const indexing = if (self.workspace.current().large) |*l| !l.file.complete() and l.failure == null else false;
+            const wait: u31 = if (indexing) 16 else if (blink) @intCast(500 - @min(500, now - self.last_blink)) else 1000;
             var dirty = false;
             if (sdl.events.waitAndPopTimeout(wait)) |pending_event| {
                 self.event(pending_event) catch |err| self.notice("{s}", .{@errorName(err)});
@@ -232,6 +233,15 @@ pub const App = struct {
                 while (budget < 128) : (budget += 1) {
                     const next = sdl.events.poll() orelse break;
                     self.event(next) catch |err| self.notice("{s}", .{@errorName(err)});
+                }
+            }
+            if (self.workspace.current().large) |*large| {
+                if (!large.file.complete() and large.failure == null) {
+                    _ = large.file.indexStep(large.io, 64 * 1024) catch |err| blk: {
+                        large.failure = err;
+                        break :blk 0;
+                    };
+                    dirty = true;
                 }
             }
             if (sdl.timer.getMillisecondsSinceInit() - self.last_config_poll >= 1000) {
@@ -309,7 +319,7 @@ pub const App = struct {
         }
         self.closeModal();
         const doc = self.workspace.current();
-        self.modal = .{ .go_to_line = .{ .restore_cursor = doc.cursor, .restore_anchor = doc.anchor, .restore_scroll = doc.scroll_line } };
+        self.modal = .{ .go_to_line = .{ .restore_cursor = doc.cursor, .restore_anchor = doc.anchor, .restore_scroll = doc.scroll_line, .restore_large_offset = if (doc.large) |l| l.offset else 0 } };
     }
     /// Called after a modal's or view's line input changed.
     pub fn lineInputChanged(self: *App) !void {
@@ -317,6 +327,26 @@ pub const App = struct {
             .picker => |*p| try pickers.refilter(self, p),
             .go_to_line => |g| {
                 const doc = self.workspace.current();
+                if (doc.large) |*large| {
+                    const input = std.mem.trim(u8, g.input.text(), " ");
+                    if (std.mem.endsWith(u8, input, "%")) {
+                        const percent = std.fmt.parseInt(u64, input[0 .. input.len - 1], 10) catch return;
+                        if (percent <= 100) large.offset = (large.file.size() / 100) * percent + (large.file.size() % 100) * percent / 100;
+                    } else if (std.mem.startsWith(u8, input, "b")) {
+                        const offset = std.fmt.parseInt(u64, input[1..], 10) catch return;
+                        large.offset = @min(offset, large.file.size());
+                    } else {
+                        const line = std.fmt.parseInt(u64, input, 10) catch return;
+                        large.offset = large.file.lineStart(large.io, line -| 1) catch |err| {
+                            switch (err) {
+                                error.IndexIncomplete, error.LineOutOfRange => {},
+                                else => large.failure = err,
+                            }
+                            return;
+                        };
+                    }
+                    return;
+                }
                 if (pickers.goToLineTarget(doc, g.input.text())) |offset| {
                     doc.move(offset, false);
                     try self.revealCursor();
@@ -349,6 +379,7 @@ pub const App = struct {
                 if (c == .@"menu::Cancel") {
                     doc.setSelection(g.restore_anchor, g.restore_cursor);
                     doc.scroll_line = g.restore_scroll;
+                    if (doc.large) |*large| large.offset = g.restore_large_offset;
                 } else if (pickers.goToLineTarget(doc, g.input.text())) |offset| {
                     doc.move(offset, false);
                     try self.revealCursor();
@@ -594,6 +625,7 @@ pub const App = struct {
     }
     pub fn placeCursor(self: *App, mx: f32, my: f32, extend: bool) !void {
         const doc = self.workspace.current();
+        if (doc.large != null) return;
         const e = try self.layout.rect(self.layout.editor);
         const row = @min(doc.lineCount() - 1, doc.scroll_line + @as(usize, @intFromFloat(@max(0, my - e.y - 8) / @as(f32, @floatFromInt(self.settings.line_height)))));
         const line = self.lineBytes(doc, row);
@@ -733,7 +765,9 @@ pub const App = struct {
         try self.renderer.rect(0, status.y, status.w, 1, t.border);
         try self.renderer.icon(@import("icons").svg("panel_left"), 12, status.y + 5, 16, t.muted);
         try self.renderer.icon(@import("icons").svg("ui:settings"), status.w - 26, status.y + 5, 16, t.muted);
-        if (docPreview(self)) {
+        if (self.workspace.current().large != null) {
+            try self.renderer.textUi("Large file: read-only byte view", 52, status.y + 18, t.text);
+        } else if (docPreview(self)) {
             try self.renderer.textUi("Read-only preview: line exceeds 64 KiB", 52, status.y + 18, t.error_text);
         } else if (self.renderer.degraded) {
             try self.renderer.textUi("Some glyphs replaced: font/atlas limit", 52, status.y + 18, t.error_text);
@@ -746,7 +780,7 @@ pub const App = struct {
         const lang = syntax.Language.fromPath(doc.path orelse "");
         var info: [256]u8 = undefined;
         const row = doc.lineOf(doc.cursor);
-        const text = try std.fmt.bufPrint(&info, "{d}:{d}    {s}    UTF-8    {s}    Spaces: {d}", .{ row + 1, doc.cursor - doc.lineStart(row) + 1, if (doc.crlf) @as([]const u8, "CRLF") else "LF", lang.displayName(), self.settings.tab_size });
+        const text = if (doc.large) |large| try std.fmt.bufPrint(&info, "Byte {d} / {d}", .{ large.offset, large.file.size() }) else try std.fmt.bufPrint(&info, "{d}:{d}    {s}    UTF-8    {s}    Spaces: {d}", .{ row + 1, doc.cursor - doc.lineStart(row) + 1, if (doc.crlf) @as([]const u8, "CRLF") else "LF", lang.displayName(), self.settings.tab_size });
         try self.renderer.textUi(text, @max(52, status.w - self.renderer.widthUi(text) - 40), status.y + 18, t.text);
         try modals.drawModal(self);
         if (self.dialog != .none) try self.drawDialog();

@@ -33,10 +33,11 @@ document ID, generation and revision; workers never hold pointers into UI arrays
 Persistent text snapshots own their backing source. Every file operation accepts
 `std.Io`. Feature modules expose commands and state, never SDL events or GPU handles.
 
-The initial shell uses the existing gap-buffer Document while the persistent tree
-is tested independently. Integrating it, stable document IDs, bounded history and
-background indexing is M2; source files are not yet proof of that integration.
+The shell uses the persistent tree for memory-backed documents. Stable document IDs, a history byte budget and worker-backed indexing remain M2 work.
 
 Before M3, workspace file access and process spawning gain explicit interfaces so
 local and SSH projects share the editor model. The terminal, database, notebook and
 remote milestones each get headless protocol/model tests before their views.
+
+`text/large_file.zig` provides an independent read-only, positional byte backend
+with budgeted chunk newline indexing and stale-file checks. Workspace owns it in a separate read-only Document state. The UI displays bounded byte windows, replacing non-ASCII and control bytes with question marks; it schedules one 64 KiB index step per tick on the main thread. This is not worker-backed and an individual disk read can still stall the UI.

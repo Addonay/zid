@@ -84,6 +84,11 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
             } else if (self.keymap_editor_open) {
                 modals.scrollKeymap(self, -wheel.scroll_y);
             } else {
+                if (doc.large) |*large| {
+                    const amount: u64 = @intCast(@abs(delta) * 120);
+                    large.offset = if (delta < 0) large.offset -| amount else @min(large.file.size(), large.offset +| amount);
+                    return;
+                }
                 doc.scroll_line = @intCast(std.math.clamp(@as(i64, @intCast(doc.scroll_line)) + delta, 0, @as(i64, @intCast(doc.lineCount() -| 1))));
                 doc.scroll_x = @max(0, doc.scroll_x - wheel.scroll_x * 30);
             }
@@ -97,7 +102,7 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
 }
 /// Zed key name for an SDL keycode, or null for keys Zed's keymap doesn't name.
 pub fn keyName(key: sdl.keycode.Keycode, buf: *[8]u8) ?[]const u8 {
-    const raw: u32 = @intCast(@intFromEnum(key));
+    const raw: u32 = @intCast(@backingInt(key));
     switch (raw) {
         0x0d => return "enter",
         0x1b => return "escape",

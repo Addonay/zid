@@ -16,3 +16,9 @@ test {
     _ = syntax;
     _ = text;
 }
+
+/// Read-only positional access and incremental indexing for large files.
+pub const large_file = @import("text/large_file.zig");
+test {
+    _ = large_file;
+}

@@ -12,6 +12,7 @@ pub fn drawEditor(self: *App) !void {
     const e = try self.layout.rect(self.layout.editor);
     const t = self.settings.theme;
     try self.fill(e, t.editor);
+    if (doc.large != null) return drawLarge(self);
     const line_height: f32 = @floatFromInt(self.settings.line_height);
     const lang = syntax.Language.fromPath(doc.path orelse "");
     if (self.syntax_doc != self.workspace.active or self.syntax_revision != doc.revision) {
@@ -67,6 +68,47 @@ pub fn drawEditor(self: *App) !void {
         try self.renderer.rect(e.x + e.w - 8, y, 5, h, t.selected);
     }
 }
+fn drawLarge(self: *App) !void {
+    const large = &self.workspace.current().large.?;
+    const e = try self.layout.rect(self.layout.editor);
+    const t = self.settings.theme;
+    self.clip(e);
+    defer self.renderer.setClip(null);
+    var header: [256]u8 = undefined;
+    const label = if (large.failure) |err| try std.fmt.bufPrint(&header, "READ ONLY  |  byte {d}/{d}  |  {s}", .{ large.offset, large.file.size(), @errorName(err) }) else try std.fmt.bufPrint(&header, "READ ONLY  |  byte {d}/{d}  |  indexed {d}/{d}  |  Go to: line, b<offset>, or %", .{ large.offset, large.file.size(), large.file.indexedBytes(), large.file.size() });
+    try self.renderer.text(label, e.x + 8, e.y + @as(f32, @floatFromInt(self.settings.font_size)), t.text);
+    if (large.failure != null) return;
+    var data: [4096]u8 = undefined;
+    const n = large.file.readWindow(large.io, large.offset, &data) catch |err| {
+        large.failure = err;
+        return;
+    };
+    var at: usize = 0;
+    var line: ?u64 = large.file.lineOf(large.io, large.offset) catch null;
+    var row: usize = 0;
+    const height: f32 = @floatFromInt(self.settings.line_height);
+    while (at < n and row + 1 < self.pageLines()) : (row += 1) {
+        const start = at;
+        var text: [120]u8 = undefined;
+        var used: usize = 0;
+        while (at < n and used < text.len and data[at] != '\n') : (at += 1) {
+            const b = data[at];
+            text[used] = if (b >= 32 and b < 127) b else '?';
+            used += 1;
+        }
+        const newline = at < n and data[at] == '\n';
+        if (newline) at += 1;
+        const y = e.y + @as(f32, @floatFromInt(row + 1)) * height + @as(f32, @floatFromInt(self.settings.font_size));
+        var offset_buf: [32]u8 = undefined;
+        const offset = if (line) |number| try std.fmt.bufPrint(&offset_buf, "{d}", .{number + 1}) else try std.fmt.bufPrint(&offset_buf, "@{x}", .{large.offset + start});
+        try self.renderer.text(offset, e.x + 8, y, t.line_number);
+        try self.renderer.text(text[0..used], e.x + 120, y, t.editor_foreground);
+        if (newline) {
+            if (line) |*number| number.* += 1;
+        }
+        if (large.offset + at > large.file.indexedBytes()) line = null;
+    }
+}
 pub fn drawRun(self: *App, bytes: []const u8, start: usize, end: usize, x: f32, baseline: f32, color: [4]u8, e: Rect, italic: bool) !void {
     if (start >= end) return;
     const at = x + self.textWidth(bytes[0..start]);
@@ -97,6 +139,7 @@ pub fn drawRun(self: *App, bytes: []const u8, start: usize, end: usize, x: f32, 
 }
 
 pub fn drawCaret(self: *App) !void {
+    if (self.workspace.current().large != null) return;
     if (!self.focused or !self.caret_visible or self.panel_focus or self.dialog != .none) return;
     const doc = self.workspace.current();
     const row = doc.lineOf(doc.cursor);

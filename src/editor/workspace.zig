@@ -55,6 +55,13 @@ pub const Workspace = struct {
             };
         }
         const before = Document.DiskIdentity.fromStat(try std.Io.Dir.cwd().statFile(self.io, absolute, .{}));
+        if (before.size > max_file_bytes) {
+            var document = try Document.initLarge(self.allocator, self.io, absolute);
+            errdefer document.deinit();
+            try self.documents.append(self.allocator, document);
+            self.active = self.documents.items.len - 1;
+            return;
+        }
         const text = blk: {
             const bytes = try std.Io.Dir.cwd().readFileAlloc(self.io, absolute, self.allocator, .limited(max_file_bytes));
             errdefer self.allocator.free(bytes);
@@ -82,6 +89,7 @@ pub const Workspace = struct {
     }
     pub fn saveWithExpectation(self: *Workspace, path: ?[]const u8, expectation: ?SaveExpectation) !void {
         const document = self.current();
+        if (document.large != null) return error.ReadOnlyLargeFile;
         const target = path orelse document.path orelse return error.PathRequired;
         const requested = try std.fs.path.resolve(self.allocator, &.{ self.root, target });
         defer self.allocator.free(requested);
@@ -444,4 +452,40 @@ test "replacement target changed before commit is preserved" {
     const contents = try tmp.dir.readFileAlloc(io, "target", std.testing.allocator, .unlimited);
     defer std.testing.allocator.free(contents);
     try std.testing.expectEqualStrings("external change", contents);
+}
+
+test "large files open bounded read only, navigate, index and close" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(io, "huge", .{});
+    const end: u64 = 5 * 1024 * 1024 * 1024;
+    try file.writePositionalAll(io, "end\n", end);
+    file.close(io);
+    var buf: [4096]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(io, &buf)];
+    var workspace = try Workspace.init(std.testing.allocator, io, root);
+    defer workspace.deinit();
+    try workspace.open("huge");
+    const doc = workspace.current();
+    try std.testing.expect(doc.large != null);
+    try std.testing.expectEqual(@as(usize, 0), doc.buffer.len());
+    try std.testing.expectError(error.ReadOnlyLargeFile, doc.insert("x"));
+    try std.testing.expectError(error.ReadOnlyLargeFile, doc.replaceRange(0, 0, "x"));
+    try std.testing.expectError(error.ReadOnlyLargeFile, doc.undo());
+    try std.testing.expectError(error.ReadOnlyLargeFile, workspace.save(null));
+    try std.testing.expectError(error.ReadOnlyLargeFile, workspace.save("other"));
+    doc.largeNavigate(end);
+    var window: [4]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 4), try doc.large.?.file.readWindow(io, doc.large.?.offset, &window));
+    try std.testing.expectEqualStrings("end\n", &window);
+    _ = try doc.large.?.file.indexStep(io, 65536);
+    try std.testing.expectEqual(@as(u64, 65536), doc.large.?.file.indexedBytes());
+    const changed = try tmp.dir.openFile(io, "huge", .{ .mode = .write_only });
+    try changed.setLength(io, 1);
+    changed.close(io);
+    try std.testing.expectError(error.FileChanged, doc.large.?.file.readWindow(io, 0, &window));
+    try std.testing.expectError(error.FileChanged, doc.large.?.file.readWindow(io, 0, &window));
+    try workspace.closeActive();
+    try std.testing.expect(workspace.current().large == null);
 }

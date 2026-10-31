@@ -34,7 +34,6 @@ fn chordText(arena: std.mem.Allocator, chord: keymap.Chord) ![]const u8 {
     return aw.written();
 }
 
-
 pub fn drawModal(app: *App) !void {
     const arena = app.frame_arena.allocator();
     switch (app.modal) {
@@ -42,7 +41,7 @@ pub fn drawModal(app: *App) !void {
         .go_to_line => |*g| {
             const doc = app.workspace.current();
             const row = doc.lineOf(doc.cursor);
-            const footer = try std.fmt.allocPrint(arena, "Current Line: {d} of {d} (column {d})", .{ row + 1, doc.lineCount(), doc.cursor - doc.lineStart(row) + 1 });
+            const footer = if (doc.large != null) "Line, b<offset>, or percentage (e.g. 50%)" else try std.fmt.allocPrint(arena, "Current Line: {d} of {d} (column {d})", .{ row + 1, doc.lineCount(), doc.cursor - doc.lineStart(row) + 1 });
             try picker_view.drawGoToLine(&app.renderer, app.settings.theme, window(app), &g.input, footer, app.caret_visible);
         },
         .picker => |*p| {

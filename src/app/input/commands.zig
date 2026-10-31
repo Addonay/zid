@@ -264,6 +264,22 @@ fn argBool(arg: ?std.json.Value, key: []const u8, default: bool) bool {
 pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
     if (lineInput(app)) |input| if (isEditor(c)) return runLineInput(app, input, c);
     const doc = app.workspace.current();
+    if (doc.large != null and isEditor(c)) {
+        const l = &doc.large.?;
+        const step: u64 = switch (c) {
+            .@"editor::MoveDown", .@"editor::LineDown" => 120,
+            .@"editor::MovePageDown", .@"editor::PageDown" => 1200,
+            else => 0,
+        };
+        const back: u64 = switch (c) {
+            .@"editor::MoveUp", .@"editor::LineUp" => 120,
+            .@"editor::MovePageUp", .@"editor::PageUp" => 1200,
+            else => 0,
+        };
+        l.offset = @min(l.file.size(), (l.offset -| back) +| step);
+        return;
+    }
+    if (doc.large != null and c == .@"workspace::SaveAs") return error.ReadOnlyLargeFile;
     const page: i32 = @intCast(app.pageLines());
     switch (c) {
         .@"workspace::Save" => {

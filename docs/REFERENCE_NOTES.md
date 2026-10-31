@@ -35,3 +35,8 @@ Zed's complete display
 maps, collaboration/history model and B+ tree have not been copied or declared
 implemented. Future LSP, terminal, diff, database and notebook work must start with
 a fresh source check in the relevant reference crates and a bounded design note.
+
+The reference `crates/editor/src/scroll.rs` derives a display position from a scroll
+anchor and snapshot. Zid's provisional large-file byte viewer keeps its byte offset
+separate from the memory-backed editor's line scroll; it does not implement Zed's
+scroll anchor or display map.
