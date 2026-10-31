@@ -22,6 +22,9 @@ pub const Document = struct {
     disk_identity: ?DiskIdentity = null,
 
     pub const max_line_bytes = 64 * 1024;
+    /// Bounds retained undo versions, not total text storage: the append-only add
+    /// buffer still requires a separate compaction policy.
+    pub const max_history_entries = 1000;
     pub const DiskIdentity = struct {
         size: u64,
         mtime: std.Io.Timestamp,
@@ -90,6 +93,7 @@ pub const Document = struct {
     }
     /// Sets the selection after an edit; redo then restores exactly this selection.
     pub fn setSelection(self: *Document, anchor: usize, cursor: usize) void {
+        self.breakTypingGroup();
         self.anchor = @min(anchor, self.buffer.len());
         self.cursor = @min(cursor, self.buffer.len());
         if (self.history_index > 0) {
@@ -104,6 +108,10 @@ pub const Document = struct {
         return .{ .start = @min(self.cursor, self.anchor), .end = @max(self.cursor, self.anchor) };
     }
     pub fn move(self: *Document, offset: usize, extend: bool) void {
+        self.breakTypingGroup();
+        self.moveInternal(offset, extend);
+    }
+    fn moveInternal(self: *Document, offset: usize, extend: bool) void {
         const previous_cursor = self.cursor;
         self.cursor = @min(offset, self.buffer.len());
         while (self.cursor > 0 and self.cursor < self.buffer.len() and self.buffer.byteAt(self.cursor) & 0xc0 == 0x80) self.cursor -= 1;
@@ -155,7 +163,7 @@ pub const Document = struct {
         if (range.start == range.end and text.len == 0) return;
         // Coalesce typing into the previous entry while it continues at the same place,
         // and break groups at word boundaries so undo removes roughly a word at a time.
-        const coalesce = typing and self.history_index == self.history.items.len and self.history_index > 0 and blk: {
+        const coalesce = typing and self.revision != self.saved_revision and self.history_index == self.history.items.len and self.history_index > 0 and blk: {
             const last = self.history.items[self.history_index - 1];
             const starts_word = text[0] != ' ' and range.start > 0 and self.buffer.byteAt(range.start - 1) == ' ';
             break :blk last.typing and last.after_revision == self.revision and last.after_cursor == range.start and !starts_word;
@@ -189,10 +197,19 @@ pub const Document = struct {
                 .typing = typing,
             });
             self.history_index += 1;
+            if (self.history.items.len > max_history_entries) {
+                self.freeEdit(self.history.items[0]);
+                std.mem.copyForwards(Edit, self.history.items[0 .. self.history.items.len - 1], self.history.items[1..]);
+                self.history.items.len -= 1;
+                self.history_index -= 1;
+            }
         }
         self.revision = self.next_revision;
         self.next_revision += 1;
-        self.move(after_cursor, false);
+        self.moveInternal(after_cursor, false);
+    }
+    fn breakTypingGroup(self: *Document) void {
+        if (self.history_index > 0) self.history.items[self.history_index - 1].typing = false;
     }
     pub fn backspace(self: *Document) !void {
         const previous_anchor = self.anchor;
@@ -213,6 +230,7 @@ pub const Document = struct {
         try self.insert("");
     }
     pub fn undo(self: *Document) !void {
+        self.breakTypingGroup();
         if (self.history_index == 0) return;
         const edit = self.history.items[self.history_index - 1];
         self.buffer.setRoot(edit.before);
@@ -229,6 +247,7 @@ pub const Document = struct {
         self.cursor = @min(edit.after_cursor, self.buffer.len());
         self.anchor = @min(edit.after_anchor, self.buffer.len());
         self.revision = edit.after_revision;
+        self.breakTypingGroup();
     }
 };
 
@@ -340,4 +359,41 @@ test "typing coalesces into word-sized undo steps" {
     try document.redo();
     try expectText(&document, "hello world");
     try std.testing.expectEqual(@as(usize, 11), document.cursor);
+}
+
+test "saving and cursor navigation separate typing groups" {
+    var document = try Document.init(std.testing.allocator, "", null);
+    defer document.deinit();
+    try document.insert("a");
+    document.saved_revision = document.revision;
+    try document.insert("b");
+    try document.undo();
+    try expectText(&document, "a");
+    try std.testing.expect(!document.dirty());
+    try document.redo();
+    document.move(0, false);
+    document.move(2, false);
+    try document.insert("c");
+    try document.undo();
+    try expectText(&document, "ab");
+    try document.insert("d");
+    try document.undo();
+    try expectText(&document, "ab");
+}
+
+test "history eviction retains a valid undo floor and supports branching" {
+    var document = try Document.init(std.testing.allocator, "", null);
+    defer document.deinit();
+    for (0..Document.max_history_entries + 5) |_| try document.replaceRange(document.buffer.len(), document.buffer.len(), "x");
+    try std.testing.expectEqual(Document.max_history_entries, document.history.items.len);
+    for (0..Document.max_history_entries + 1) |_| try document.undo();
+    try expectText(&document, "xxxxx");
+    try std.testing.expectEqual(@as(usize, 0), document.history_index);
+    try document.redo();
+    try expectText(&document, "xxxxxx");
+    try document.insert("y");
+    try document.redo();
+    try expectText(&document, "xxxxxxy");
+    try document.undo();
+    try expectText(&document, "xxxxxx");
 }

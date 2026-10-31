@@ -46,7 +46,8 @@ window, native caption glyphs, Zafi shell, project folders, tabs, editor and sta
 clipboard, history commands, safe-close/Save As flow, JSONC settings/keymaps, sourced
 built-in themes and Zed default fonts/icons, incremental lexers.
 
-M2 is still required for persistent-tree Document integration, background indexing,
-large-file mode, long-line windowing, bounded/coalesced undo and performance targets.
+M2 has integrated the persistent-tree Document and word-coalesced undo, capped at
+1000 entries with save/navigation boundaries. Background indexing, large-file mode,
+long-line windowing, a history byte budget, add-buffer compaction and performance targets remain.
 The existing application remains capped at 32 MiB, with read-only previews for lines
 over 64 KiB. Later milestone features have not been implemented by this shell work.

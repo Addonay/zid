@@ -79,7 +79,8 @@ and `src/core` must never import SDL, Zafi or `gfx`. Everything that touches fil
   nodes. A snapshot is a root pointer plus revision, cheap to hand to workers.
 - **History**: because the tree is persistent, an undo entry is the previous root
   plus selections (O(log n) retained nodes, never a copy of removed text). Typing coalesces
-  by time. Entries are budgeted by count and retained-node estimate. The add buffer is
+  by word in the current implementation, with boundaries at saves and navigation.
+  History retains at most 1000 entries; a retained-node byte budget remains planned. The add buffer is
   append-only in stable 1 MiB blocks; compaction of unreachable add bytes is future work.
 
 ### Text engine design (2026-11-01): one structure, three borrowed ideas

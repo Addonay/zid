@@ -25,8 +25,13 @@ the corresponding behavior.
 | `/home/addo/dev/stupid/chatƺpt/src/ui/app.zig` | Breeze caption controls and Adwaita caption controls have distinct spacing/backgrounds | Use the reference sizing, hover treatment and desktop symbolic glyph resolver |
 | `/home/addo/dev/stupid/chatƺpt/patch/sdl-gpu-vulkan-transparent.patch` | SDL's transparent-window guard needs an exception for Vulkan | Build pinned SDL from a patched disposable source copy |
 
-The current UI still uses its older gap-buffer Document. The persistent tree and
-Source are independently tested and await M2 integration. Zed's complete display
+The UI Document now uses the persistent piece tree for memory-backed files and
+retains root pairs for undo. Like the explicit transaction finalization in
+`crates/text/src/text.rs`, navigation and undo/redo end a typing group; a saved
+revision also forms a boundary. Zid currently groups by word rather than time
+and retains at most 1000 undo entries. This limits retained versions, not the
+append-only text store; add-buffer compaction remains unfinished.
+Zed's complete display
 maps, collaboration/history model and B+ tree have not been copied or declared
 implemented. Future LSP, terminal, diff, database and notebook work must start with
 a fresh source check in the relevant reference crates and a bounded design note.
