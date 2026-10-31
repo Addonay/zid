@@ -276,6 +276,7 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
             .@"editor::MovePageUp", .@"editor::PageUp" => 1200,
             else => 0,
         };
+        if (step == 0 and back == 0) return error.UnsupportedLargeFileCommand;
         l.offset = @min(l.file.size(), (l.offset -| back) +| step);
         return;
     }

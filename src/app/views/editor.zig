@@ -69,6 +69,7 @@ pub fn drawEditor(self: *App) !void {
     }
 }
 fn drawLarge(self: *App) !void {
+    const doc = self.workspace.current();
     const large = &self.workspace.current().large.?;
     const e = try self.layout.rect(self.layout.editor);
     const t = self.settings.theme;
@@ -78,31 +79,41 @@ fn drawLarge(self: *App) !void {
     const label = if (large.failure) |err| try std.fmt.bufPrint(&header, "READ ONLY  |  byte {d}/{d}  |  {s}", .{ large.offset, large.file.size(), @errorName(err) }) else try std.fmt.bufPrint(&header, "READ ONLY  |  byte {d}/{d}  |  indexed {d}/{d}  |  Go to: line, b<offset>, or %", .{ large.offset, large.file.size(), large.file.indexedBytes(), large.file.size() });
     try self.renderer.text(label, e.x + 8, e.y + @as(f32, @floatFromInt(self.settings.font_size)), t.text);
     if (large.failure != null) return;
-    var data: [4096]u8 = undefined;
+    var data: [64 * 1024]u8 = undefined;
     const n = large.file.readWindow(large.io, large.offset, &data) catch |err| {
         large.failure = err;
         return;
     };
     var at: usize = 0;
-    var line: ?u64 = large.file.lineOf(large.io, large.offset) catch null;
+    var line: ?u64 = large.file.lineOf(large.io, large.offset) catch |err| switch (err) {
+        error.IndexIncomplete => null,
+        else => {
+            large.failure = err;
+            return;
+        },
+    };
     var row: usize = 0;
     const height: f32 = @floatFromInt(self.settings.line_height);
     while (at < n and row + 1 < self.pageLines()) : (row += 1) {
         const start = at;
-        var text: [120]u8 = undefined;
-        var used: usize = 0;
-        while (at < n and used < text.len and data[at] != '\n') : (at += 1) {
-            const b = data[at];
-            text[used] = if (b >= 32 and b < 127) b else '?';
-            used += 1;
+        var text: [4096]u8 = undefined;
+        const decoded = zid.large_display.decodeLine(data[at..n], &text, self.settings.tab_size, large.offset + n == large.file.size());
+        at += decoded.consumed;
+        // Output exhaustion truncates one logical line rather than wrapping an
+        // arbitrary byte count into rows with duplicated line numbers.
+        var newline = decoded.newline;
+        if (!newline) {
+            if (std.mem.indexOfScalar(u8, data[at..n], '\n')) |lf| {
+                at += lf + 1;
+                newline = true;
+            } else at = n;
         }
-        const newline = at < n and data[at] == '\n';
-        if (newline) at += 1;
         const y = e.y + @as(f32, @floatFromInt(row + 1)) * height + @as(f32, @floatFromInt(self.settings.font_size));
         var offset_buf: [32]u8 = undefined;
         const offset = if (line) |number| try std.fmt.bufPrint(&offset_buf, "{d}", .{number + 1}) else try std.fmt.bufPrint(&offset_buf, "@{x}", .{large.offset + start});
         try self.renderer.text(offset, e.x + 8, y, t.line_number);
-        try self.renderer.text(text[0..used], e.x + 120, y, t.editor_foreground);
+        try self.renderer.text(text[0..decoded.written], e.x + 120 - doc.scroll_x, y, t.editor_foreground);
+        if (decoded.truncated) try self.renderer.text("…", e.x + e.w - 28, y, t.muted);
         if (newline) {
             if (line) |*number| number.* += 1;
         }
