@@ -1,0 +1,16 @@
+diff --git a/src/gpu/SDL_gpu.c b/src/gpu/SDL_gpu.c
+index c51f7f0..d95fcb9 100644
+--- a/src/gpu/SDL_gpu.c
++++ b/src/gpu/SDL_gpu.c
+@@ -3238,7 +3238,10 @@ bool SDL_ClaimWindowForGPUDevice(
+         return SDL_InvalidParamError("window");
+     }
+ 
+-    if ((window->flags & SDL_WINDOW_TRANSPARENT) != 0) {
++    /* Vulkan already implements transparent composite alpha, which
++     * frameless windows with rounded corners need. */
++    if ((window->flags & SDL_WINDOW_TRANSPARENT) != 0 &&
++        SDL_strcmp(SDL_GetGPUDeviceDriver(device), "vulkan") != 0) {
+         return SDL_SetError("The GPU API doesn't support transparent windows");
+     }
+ 

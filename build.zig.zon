@@ -1,0 +1,25 @@
+.{
+    .name = .zid,
+    .version = "0.1.0",
+    .fingerprint = 0x58c7413bd8806e1a, // Preserve this project identity.
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .sdl3 = .{
+            .url = "git+https://codeberg.org/7Games/zig-sdl3.git#f0500f824ff2768a3cc0ece2918df56576dde11c",
+            .hash = "sdl3-0.2.4-NmT1QwAfKgDaBkEDE1e-vILMFvhcxX5dIgrvbK5LfN8U",
+        },
+        .zafi = .{
+            .url = "git+https://github.com/Addonay/zafi#9062288c3c8cabfdf505a3d450dd56e4a2b66098",
+            .hash = "zafi-0.3.0-gvFdNhd0EgBFNiUn8-W_vwezH07CBaS9AWL0Ku0UQstV",
+        },
+        .patch = .{
+            .url = "git+https://github.com/marler8997/zig-patch#c3ad78b305ba03bcd645c0bac004d1719407c6b8",
+            .hash = "patch-0.0.0-WCKjsxixAADfwXQv4Vugyxo6PFbDFuuyM7ly3OiqZRYR",
+        },
+        .translate_c = .{
+            .url = "git+https://codeberg.org/ziglang/translate-c?ref=2.0.2#c11030012dc325d446474d17b78c242fd1d622ec",
+            .hash = "translate_c-2.0.2-Q_BUWvBNBwBgPKQJPblip6M7AHNK_IPNPmyv4rSIQMQc",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "assets", "README.md", "docs", "patch", "tools" },
+}

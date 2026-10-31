@@ -1,0 +1,9 @@
+{
+  // Zid reads ~/.config/zid/settings.json (or $XDG_CONFIG_HOME/zid/settings.json).
+  "font_size": 15,
+  "line_height": 23,
+  "panel_width": 240,
+  "tab_size": 4,
+  "cursor_blink": true,
+  "theme_name": "one_dark"
+}

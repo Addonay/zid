@@ -1,0 +1,13 @@
+[
+  // Overrides are checked before built-in shortcuts.
+  { "key": "Ctrl+s", "action": "save" },
+  { "key": "Ctrl+Shift+s", "action": "save_as" },
+  { "key": "Ctrl+o", "action": "open" },
+  { "key": "Ctrl+n", "action": "new" },
+  { "key": "Ctrl+w", "action": "close" },
+  { "key": "Ctrl+q", "action": "quit" },
+  { "key": "Ctrl+b", "action": "toggle_panel" },
+  { "key": "Ctrl+Tab", "action": "next_tab" },
+  { "key": "Ctrl+Shift+Tab", "action": "previous_tab" },
+  { "key": "Ctrl+Shift+r", "action": "reload_config" }
+]
