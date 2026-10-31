@@ -113,8 +113,6 @@ pub const Workspace = struct {
         }
         const same_target = if (document.path) |old| std.mem.eql(u8, old, absolute) else false;
         if (same_target) try self.checkIdentity(absolute, document.disk_identity);
-        const text = try document.buffer.toOwnedSlice(self.allocator);
-        defer self.allocator.free(text);
         // Snapshot the exact object whose permissions and contents would be
         // replaced. This also protects Save As targets during the write.
         const existing = std.Io.Dir.cwd().openFile(self.io, absolute, .{}) catch |err| switch (err) {
@@ -139,7 +137,7 @@ pub const Workspace = struct {
             .permissions = if (existing_stat) |stat| stat.permissions else .default_file,
         });
         defer file.deinit(self.io);
-        try file.file.writeStreamingAll(self.io, text);
+        try document.buffer.writeTo(self.io, file.file);
         // chmod restores an existing target's mode masked during temp creation.
         // A new file must retain the mode produced by create and the umask.
         if (existing_stat) |stat| try file.file.setPermissions(self.io, stat.permissions);
@@ -150,7 +148,7 @@ pub const Workspace = struct {
         document.path = absolute;
         document.disk_identity = new_identity;
         document.saved_revision = document.revision;
-        log.info("saved {s}: {d} bytes, revision={d}", .{ document.path.?, text.len, document.revision });
+        log.info("saved {s}: {d} bytes, revision={d}", .{ document.path.?, document.buffer.len(), document.revision });
     }
     fn commitSave(self: *Workspace, file: *std.Io.File.Atomic, path: []const u8, existing: ?Document.DiskIdentity) !void {
         if (existing) |identity| {

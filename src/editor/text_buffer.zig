@@ -107,6 +107,18 @@ pub const TextBuffer = struct {
         return out;
     }
 
+    /// Writes pieces directly without allocating a second document-sized buffer.
+    /// The caller owns atomic replacement and durability policy.
+    pub fn writeTo(self: *const TextBuffer, io: std.Io, file: std.Io.File) !void {
+        var offset: usize = 0;
+        while (offset < self.len()) {
+            const chunk = self.chunkAt(offset);
+            const bytes = chunk.bytes[offset - chunk.start ..];
+            try file.writeStreamingAll(io, bytes);
+            offset += bytes.len;
+        }
+    }
+
     /// Replaces [start, end) with `text`; failure leaves the text unchanged.
     pub fn replace(self: *TextBuffer, start: usize, end: usize, text: []const u8) !void {
         std.debug.assert(start <= end and end <= self.len());
@@ -231,6 +243,35 @@ test "roots restore earlier versions" {
     try expectText(&buffer, "hello");
     buffer.setRoot(v1);
     try expectText(&buffer, "hello world");
+}
+
+test "streamed save preserves edited pieces and restored roots" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const original = try std.testing.allocator.alloc(u8, memory_chunk * 3 + 19);
+    defer std.testing.allocator.free(original);
+    for (original, 0..) |*byte, i| byte.* = @intCast('a' + i % 26);
+    var buffer = try TextBuffer.init(std.testing.allocator, original);
+    defer buffer.deinit();
+    const root = buffer.root();
+    defer buffer.releaseRoot(root);
+    try buffer.replace(memory_chunk - 2, memory_chunk + 3, "\r\n中é");
+    const file = try tmp.dir.createFile(io, "saved", .{});
+    defer file.close(io);
+    try buffer.writeTo(io, file);
+    const expected = try buffer.toOwnedSlice(std.testing.allocator);
+    defer std.testing.allocator.free(expected);
+    const actual = try tmp.dir.readFileAlloc(io, "saved", std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(actual);
+    try std.testing.expectEqualStrings(expected, actual);
+    buffer.setRoot(root);
+    const restored = try tmp.dir.createFile(io, "restored", .{});
+    defer restored.close(io);
+    try buffer.writeTo(io, restored);
+    const bytes = try tmp.dir.readFileAlloc(io, "restored", std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expectEqualStrings(original, bytes);
 }
 
 test "UTF-8 navigation stays on codepoint boundaries across pieces" {
