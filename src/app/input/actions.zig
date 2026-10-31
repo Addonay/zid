@@ -7,68 +7,6 @@ const config = @import("../config.zig");
 const Rect = @import("../layout.zig").Rect;
 const syntax = zid.syntax;
 const max_line_bytes = 64 * 1024;
-pub fn action(self: *App, action_value: config.Action) !void {
-    if (action_value == .close or action_value == .new) self.syntax_doc = std.math.maxInt(usize);
-    const doc = self.workspace.current();
-    switch (action_value) {
-        .save => {
-            if (doc.path == null) {
-                try self.pathDialog(.save);
-                return;
-            }
-            try self.workspace.save(null);
-            self.notice("Saved {s}", .{doc.path.?});
-        },
-        .save_as => try self.pathDialog(.save),
-        .open => try self.pathDialog(.open),
-        .new => {
-            try self.workspace.newDocument();
-            self.panel_focus = false;
-        },
-        .close => {
-            if (doc.dirty()) self.dialog = .close else try self.workspace.closeActive();
-        },
-        .quit => {
-            for (self.workspace.documents.items) |*d| if (d.dirty()) {
-                self.dialog = .quit;
-                return;
-            };
-            self.running = false;
-        },
-        .undo => try doc.undo(),
-        .redo => try doc.redo(),
-        .select_all => {
-            doc.anchor = 0;
-            doc.cursor = doc.buffer.len();
-        },
-        .copy, .cut => {
-            const range = doc.selection();
-            if (range.start == range.end) return;
-            const text = try self.gpa.allocSentinel(u8, range.end - range.start, 0);
-            defer self.gpa.free(text);
-            doc.buffer.copy(range.start, text);
-            try sdl.clipboard.setText(text);
-            if (action_value == .cut) try doc.insert("");
-        },
-        .paste => {
-            const text = try sdl.clipboard.getText();
-            defer sdl.free(text);
-            try doc.insert(text);
-        },
-        .toggle_panel => {
-            self.panel_open = !self.panel_open;
-            self.panel_focus = false;
-        },
-        .next_tab => self.workspace.active = (self.workspace.active + 1) % self.workspace.documents.items.len,
-        .previous_tab => self.workspace.active = (self.workspace.active + self.workspace.documents.items.len - 1) % self.workspace.documents.items.len,
-        .reload_config => {
-            try self.reloadConfig();
-            self.notice("Configuration reloaded", .{});
-        },
-    }
-    self.tabs_first = @min(self.tabs_first, self.workspace.active);
-    if (action_value == .undo or action_value == .redo or action_value == .paste or action_value == .cut) try self.revealCursor();
-}
 pub fn pathDialog(self: *App, kind: @FieldType(App, "dialog")) !void {
     self.path_input.clearRetainingCapacity();
     if (kind == .save) {
@@ -77,6 +15,10 @@ pub fn pathDialog(self: *App, kind: @FieldType(App, "dialog")) !void {
     self.dialog = kind;
 }
 pub fn dialogKey(self: *App, key: sdl.keycode.Keycode) !void {
+    if (self.dialog == .settings) {
+        try @import("../views/settings_dialog.zig").handleKey(self, key);
+        return;
+    }
     if (key == .escape) {
         self.dialog = .none;
         self.close_after_save = false;

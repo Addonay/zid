@@ -1,50 +1,206 @@
 const std = @import("std");
-pub const Entry = struct { path: []u8, depth: usize, directory: bool, collapsed: bool = false };
+
+pub const Entry = struct {
+    path: []u8,
+    name: []u8,
+    depth: usize,
+    directory: bool,
+    collapsed: bool = false,
+    guide_mask: u32 = 0,
+};
+
+pub fn naturalLessThan(a: []const u8, b: []const u8) bool {
+    var i: usize = 0;
+    var j: usize = 0;
+    while (i < a.len and j < b.len) {
+        if (std.ascii.isDigit(a[i]) and std.ascii.isDigit(b[j])) {
+            var num_a: u64 = 0;
+            while (i < a.len and std.ascii.isDigit(a[i])) : (i += 1) {
+                num_a = num_a *% 10 +% (a[i] - '0');
+            }
+            var num_b: u64 = 0;
+            while (j < b.len and std.ascii.isDigit(b[j])) : (j += 1) {
+                num_b = num_b *% 10 +% (b[j] - '0');
+            }
+            if (num_a != num_b) return num_a < num_b;
+            continue;
+        }
+        const ca = std.ascii.toLower(a[i]);
+        const cb = std.ascii.toLower(b[j]);
+        if (ca != cb) return ca < cb;
+        i += 1;
+        j += 1;
+    }
+    if (i < a.len) return false;
+    if (j < b.len) return true;
+    return std.mem.lessThan(u8, a, b);
+}
+
+const Node = struct {
+    name: []u8,
+    full_path: []u8,
+    is_dir: bool,
+    children: std.ArrayList(Node),
+
+    fn init(gpa: std.mem.Allocator, name: []const u8, full_path: []const u8, is_dir: bool) !Node {
+        const n = try gpa.dupe(u8, name);
+        errdefer gpa.free(n);
+        const p = try gpa.dupe(u8, full_path);
+        errdefer gpa.free(p);
+        return .{
+            .name = n,
+            .full_path = p,
+            .is_dir = is_dir,
+            .children = .empty,
+        };
+    }
+
+    fn deinit(self: *Node, gpa: std.mem.Allocator) void {
+        for (self.children.items) |*child| {
+            child.deinit(gpa);
+        }
+        self.children.deinit(gpa);
+        gpa.free(self.name);
+        gpa.free(self.full_path);
+    }
+};
+
 pub const Project = struct {
     allocator: std.mem.Allocator,
     entries: std.ArrayList(Entry) = .empty,
+
     pub fn init(gpa: std.mem.Allocator, files: []const []u8) !Project {
         var self: Project = .{ .allocator = gpa };
         errdefer self.deinit();
-        var seen: std.StringHashMap(void) = .init(gpa);
-        defer seen.deinit();
+
+        var root = try Node.init(gpa, "", "", true);
+        defer root.deinit(gpa);
+
         for (files) |file| {
-            var depth: usize = 0;
-            for (file, 0..) |ch, i| if (ch == '/') {
-                const prefix = file[0..i];
-                if (!seen.contains(prefix)) {
-                    try seen.put(prefix, {});
-                    const path = try gpa.dupe(u8, prefix);
-                    errdefer gpa.free(path);
-                    try self.entries.append(gpa, .{ .path = path, .depth = depth, .directory = true });
+            var cur = &root;
+            var it = std.mem.splitScalar(u8, file, '/');
+            var path_buf: std.ArrayList(u8) = .empty;
+            defer path_buf.deinit(gpa);
+
+            while (it.next()) |part| {
+                if (part.len == 0) continue;
+                if (path_buf.items.len > 0) try path_buf.append(gpa, '/');
+                try path_buf.appendSlice(gpa, part);
+
+                const is_file = (it.index == null or it.index.? >= file.len);
+                var found: ?*Node = null;
+                for (cur.children.items) |*child| {
+                    if (std.mem.eql(u8, child.name, part) and child.is_dir != is_file) {
+                        found = child;
+                        break;
+                    }
                 }
-                depth += 1;
-            };
-            const path = try gpa.dupe(u8, file);
-            errdefer gpa.free(path);
-            try self.entries.append(gpa, .{ .path = path, .depth = depth, .directory = false });
-        }
-        std.mem.sort(Entry, self.entries.items, {}, struct {
-            fn less(_: void, a: Entry, b: Entry) bool {
-                return std.mem.lessThan(u8, a.path, b.path);
+                if (found) |child| {
+                    cur = child;
+                } else {
+                    var new_node = try Node.init(gpa, part, path_buf.items, !is_file);
+                    errdefer new_node.deinit(gpa);
+                    try cur.children.append(gpa, new_node);
+                    cur = &cur.children.items[cur.children.items.len - 1];
+                }
             }
-        }.less);
+        }
+
+        try autoFold(&root, gpa);
+        sortNode(&root);
+
+        const count = root.children.items.len;
+        for (root.children.items, 0..) |*child, i| {
+            try self.flatten(child, 0, 0, i + 1 == count);
+        }
+
         return self;
     }
+
+    fn autoFold(node: *Node, gpa: std.mem.Allocator) !void {
+        for (node.children.items) |*child| {
+            try autoFold(child, gpa);
+        }
+
+        if (node.full_path.len > 0 and node.is_dir) {
+            while (node.children.items.len == 1 and node.children.items[0].is_dir) {
+                const child = &node.children.items[0];
+                const combined_name = try std.fmt.allocPrint(gpa, "{s} / {s}", .{ node.name, child.name });
+                gpa.free(node.name);
+                node.name = combined_name;
+
+                gpa.free(node.full_path);
+                node.full_path = child.full_path;
+
+                gpa.free(child.name);
+                const next_children = child.children;
+                node.children.deinit(gpa);
+                node.children = next_children;
+            }
+        }
+    }
+
+    fn sortNode(node: *Node) void {
+        std.mem.sort(Node, node.children.items, {}, struct {
+            fn less(_: void, a: Node, b: Node) bool {
+                if (a.is_dir != b.is_dir) return a.is_dir and !b.is_dir;
+                return naturalLessThan(a.name, b.name);
+            }
+        }.less);
+        for (node.children.items) |*child| {
+            sortNode(child);
+        }
+    }
+
+    fn appendEntry(self: *Project, node: *Node, depth: usize, guide_mask: u32) !void {
+        const path = try self.allocator.dupe(u8, node.full_path);
+        errdefer self.allocator.free(path);
+        const name = try self.allocator.dupe(u8, node.name);
+        errdefer self.allocator.free(name);
+
+        try self.entries.append(self.allocator, .{
+            .path = path,
+            .name = name,
+            .depth = depth,
+            .directory = node.is_dir,
+            .collapsed = false,
+            .guide_mask = guide_mask,
+        });
+    }
+
+    fn flatten(self: *Project, node: *Node, depth: usize, running_mask: u32, is_last: bool) !void {
+        const guide_mask = if (depth == 0) 0 else running_mask | (@as(u32, 1) << @intCast(depth - 1));
+        try self.appendEntry(node, depth, guide_mask);
+
+        const next_mask = if (is_last) running_mask else running_mask | (@as(u32, 1) << @intCast(depth));
+        const count = node.children.items.len;
+        for (node.children.items, 0..) |*child, i| {
+            try self.flatten(child, depth + 1, next_mask, i + 1 == count);
+        }
+    }
+
     pub fn deinit(self: *Project) void {
-        for (self.entries.items) |e| self.allocator.free(e.path);
+        for (self.entries.items) |e| {
+            self.allocator.free(e.path);
+            self.allocator.free(e.name);
+        }
         self.entries.deinit(self.allocator);
     }
+
     pub fn visible(self: *const Project, gpa: std.mem.Allocator, out: *std.ArrayList(usize)) !void {
         out.clearRetainingCapacity();
-        var hidden: ?[]const u8 = null;
+        var hide_prefix: ?[]const u8 = null;
         for (self.entries.items, 0..) |e, i| {
-            if (hidden) |prefix| {
-                if (e.path.len > prefix.len and std.mem.startsWith(u8, e.path, prefix) and e.path[prefix.len] == '/') continue;
-                hidden = null;
+            if (hide_prefix) |prefix| {
+                if (std.mem.startsWith(u8, e.path, prefix) and (e.path.len == prefix.len or e.path[prefix.len] == '/')) {
+                    continue;
+                }
+                hide_prefix = null;
             }
             try out.append(gpa, i);
-            if (e.directory and e.collapsed) hidden = e.path;
+            if (e.directory and e.collapsed) {
+                hide_prefix = e.path;
+            }
         }
     }
 };
@@ -65,6 +221,23 @@ fn allocationScenario(gpa: std.mem.Allocator) !void {
     try project.visible(gpa, &rows);
     try std.testing.expectEqual(@as(usize, 2), rows.items.len);
 }
+
 test "project collapse and allocation ownership" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationScenario, .{});
+}
+
+test "project auto-folds single child directories and sorts dirs before files" {
+    const files = [_][]const u8{ "docs/guide/start.md", "README.md", "assets/icons/zig.svg", "build.zig" };
+    var files_mut: [files.len][]u8 = undefined;
+    for (files, 0..) |f, i| files_mut[i] = @constCast(f);
+    var project = try Project.init(std.testing.allocator, &files_mut);
+    defer project.deinit();
+
+    // Check that directories come first: assets and docs come before README.md and build.zig
+    try std.testing.expect(project.entries.items[0].directory); // assets / icons
+    try std.testing.expectEqualStrings("assets / icons", project.entries.items[0].name);
+    try std.testing.expectEqualStrings("assets/icons", project.entries.items[0].path);
+
+    try std.testing.expectEqualStrings("docs / guide", project.entries.items[2].name);
+    try std.testing.expectEqualStrings("docs/guide", project.entries.items[2].path);
 }

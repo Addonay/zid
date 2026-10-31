@@ -7,11 +7,14 @@ pub const Settings = struct {
     panel_width: u32 = 240,
     tab_size: u32 = 4,
     cursor_blink: bool = true,
+    auto_fold_dirs: bool = true,
+    show_indent_guides: bool = true,
     theme_name: theme_module.ThemeName = .one_dark,
+    icon_theme: @import("icon_theme.zig").Name = .zed_default,
     theme: Theme = .{},
 };
 pub const Binding = struct { key: []const u8, action: Action };
-pub const Action = enum { save, save_as, new, close, quit, undo, redo, copy, cut, paste, select_all, toggle_panel, next_tab, previous_tab, open, reload_config };
+pub const Action = enum { save, save_as, new, close, quit, undo, redo, copy, cut, paste, select_all, toggle_panel, next_tab, previous_tab, open, reload_config, open_settings };
 pub const defaults = [_]Binding{
     .{ .key = "Ctrl+s", .action = .save },                 .{ .key = "Ctrl+Shift+s", .action = .save_as },
     .{ .key = "Ctrl+n", .action = .new },                  .{ .key = "Ctrl+w", .action = .close },
@@ -21,7 +24,7 @@ pub const defaults = [_]Binding{
     .{ .key = "Ctrl+v", .action = .paste },                .{ .key = "Ctrl+a", .action = .select_all },
     .{ .key = "Ctrl+b", .action = .toggle_panel },         .{ .key = "Ctrl+Tab", .action = .next_tab },
     .{ .key = "Ctrl+Shift+Tab", .action = .previous_tab }, .{ .key = "Ctrl+o", .action = .open },
-    .{ .key = "Ctrl+Shift+r", .action = .reload_config },
+    .{ .key = "Ctrl+Shift+r", .action = .reload_config },  .{ .key = "Ctrl+,", .action = .open_settings },
 };
 
 /// Replace comments and trailing commas with spaces, retaining byte positions.
@@ -131,6 +134,94 @@ pub fn loadSettings(gpa: std.mem.Allocator, io: std.Io, root: []const u8) !Setti
     }
     try validate(result);
     return result;
+}
+
+pub fn saveSettings(gpa: std.mem.Allocator, io: std.Io, root: []const u8, s: Settings) !void {
+    std.Io.Dir.cwd().createDirPath(io, root) catch {};
+    const path = try std.fs.path.join(gpa, &.{ root, "settings.json" });
+    defer gpa.free(path);
+    // Carry explicit color overrides forward; the UI only edits the scalar settings.
+    var overrides: []u8 = &.{};
+    defer gpa.free(overrides);
+    if (load(std.json.Value, gpa, io, path)) |raw| {
+        var parsed = raw;
+        defer parsed.deinit();
+        if (parsed.value == .object) if (parsed.value.object.get("theme")) |theme| if (theme == .object) {
+            const json = try std.json.Stringify.valueAlloc(gpa, theme, .{});
+            defer gpa.free(json);
+            overrides = try std.fmt.allocPrint(gpa, ",\n    \"theme\": {s}", .{json});
+        };
+    } else |_| {}
+    const content = try std.fmt.allocPrint(gpa,
+        \\{{
+        \\    "font_size": {d},
+        \\    "line_height": {d},
+        \\    "panel_width": {d},
+        \\    "tab_size": {d},
+        \\    "cursor_blink": {},
+        \\    "auto_fold_dirs": {},
+        \\    "show_indent_guides": {},
+        \\    "theme_name": "{s}",
+        \\    "icon_theme": "{s}"{s}
+        \\}}
+        \\
+    , .{
+        s.font_size,
+        s.line_height,
+        s.panel_width,
+        s.tab_size,
+        s.cursor_blink,
+        s.auto_fold_dirs,
+        s.show_indent_guides,
+        @tagName(s.theme_name),
+        @tagName(s.icon_theme),
+        overrides,
+    });
+    defer gpa.free(content);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = content });
+}
+
+test "settings save and reload preserves values" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    var buffer: [4096]u8 = undefined;
+    const root = buffer[0..try temporary.dir.realPath(io, &buffer)];
+    const original: Settings = .{
+        .font_size = 18,
+        .line_height = 28,
+        .panel_width = 280,
+        .tab_size = 2,
+        .cursor_blink = false,
+        .auto_fold_dirs = true,
+        .show_indent_guides = false,
+        .theme_name = .catppuccin,
+    };
+    try saveSettings(std.testing.allocator, io, root, original);
+    const loaded = try loadSettings(std.testing.allocator, io, root);
+    try std.testing.expectEqual(original.font_size, loaded.font_size);
+    try std.testing.expectEqual(original.line_height, loaded.line_height);
+    try std.testing.expectEqual(original.panel_width, loaded.panel_width);
+    try std.testing.expectEqual(original.tab_size, loaded.tab_size);
+    try std.testing.expectEqual(original.cursor_blink, loaded.cursor_blink);
+    try std.testing.expectEqual(original.auto_fold_dirs, loaded.auto_fold_dirs);
+    try std.testing.expectEqual(original.show_indent_guides, loaded.show_indent_guides);
+    try std.testing.expectEqual(original.theme_name, loaded.theme_name);
+}
+
+test "saving settings keeps explicit theme color overrides" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    try temporary.dir.writeFile(io, .{ .sub_path = "settings.json", .data = "{\"theme_name\":\"ayu\",\"theme\":{\"text\":[1,2,3,255]},}" });
+    var buffer: [4096]u8 = undefined;
+    const root = buffer[0..try temporary.dir.realPath(io, &buffer)];
+    var s = try loadSettings(std.testing.allocator, io, root);
+    s.tab_size = 3;
+    try saveSettings(std.testing.allocator, io, root, s);
+    const loaded = try loadSettings(std.testing.allocator, io, root);
+    try std.testing.expectEqual(@as(u32, 3), loaded.tab_size);
+    try std.testing.expectEqual([4]u8{ 1, 2, 3, 255 }, loaded.theme.text);
 }
 
 test "settings select a builtin then apply only explicit color overrides" {

@@ -8,12 +8,14 @@ application file. Planned directories are introduced when they contain real code
 | --- | --- | --- |
 | `core/` | logging, jobs, mailbox, IDs, cancellation, configuration primitives | Zig standard library |
 | `text/` | byte sources, piece tree, snapshots, indexing, Unicode, history | core, standard library |
-| `editor/` | documents, selections, edit commands, workspace document lifecycle | text, core, standard library |
+| `editor/` | documents (`document`), treap-backed storage (`text_buffer`), editor commands behind `editor::*` actions (`commands`), workspace lifecycle | text, core, standard library |
 | `syntax/` | incremental lexers, checkpoint state, later structure | text, core, standard library |
 | `project/` (planned) | file tree, watches, fuzzy search, project metadata | editor IDs, core, filesystem interface |
 | `app/` | application ownership, scheduling, configuration and action routing | headless modules, platform, gfx |
-| `app/views/` | title bar, files, tabs, editor, status, dialogs | application view state, gfx, layout |
-| `app/input/` | event translation, keymap dispatch, focus and pointer routing | app actions, typed SDL events |
+| `app/views/` | title bar, files, tabs, editor, status, dialogs, settings, pickers (`picker_view`, `modals`), keymap editor | application view state, gfx, layout |
+| `app/input/` | event translation, keymap dispatch (`events`), Zed action registry and focus contexts (`commands`), picker controllers (`pickers`) | app actions, typed SDL events |
+| `app/` (pure helpers) | `keymap` (Zed keymap parse/resolve), `fuzzy`, `line_input`, `recent_projects`, `icon_theme`, `text_match` | standard library only; tested by `test-ui` |
+| `util/` | dependency-free encoders (PNG for `--screenshot`) | standard library |
 | `app/config/` (planned) | settings, keymap and theme registry | standard library; no SDL |
 | `gfx/` | GPU pipelines, batching, clipping, glyph/icon atlas | typed zig-sdl3 GPU, font/SVG raster interfaces |
 | `platform/` | windows, native caption icons, clipboard, fonts | typed zig-sdl3, native font libraries |

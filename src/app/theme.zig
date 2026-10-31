@@ -31,6 +31,18 @@ pub const Theme = struct {
     status: Color = .{ 59, 65, 77, 255 },
     editor_foreground: Color = .{ 172, 178, 190, 255 },
     active_line: Color = .{ 47, 52, 62, 191 },
+    border_variant: Color = .{ 54, 60, 70, 255 },
+    border_focused: Color = .{ 71, 103, 158, 255 },
+    elevated_surface: Color = .{ 47, 52, 62, 255 },
+    element_background: Color = .{ 46, 52, 62, 255 },
+    element_hover: Color = .{ 54, 60, 70, 255 },
+    element_selected: Color = .{ 69, 74, 86, 255 },
+    ghost_element_hover: Color = .{ 54, 60, 70, 255 },
+    ghost_element_selected: Color = .{ 69, 74, 86, 255 },
+    placeholder: Color = .{ 135, 138, 152, 255 },
+    indent_guide: Color = .{ 59, 62, 69, 255 },
+    indent_guide_active: Color = .{ 84, 89, 99, 255 },
+    scrollbar_thumb: Color = .{ 200, 204, 212, 76 },
     tokens: [@typeInfo(token.Kind).@"enum".field_names.len]TokenStyle = @splat(.{}),
 
     pub fn builtin(gpa: std.mem.Allocator, name: ThemeName) !Theme {
@@ -54,6 +66,8 @@ pub const Theme = struct {
             const fields = .{
                 .{ "background", "background" },          .{ "surface", "surface.background" }, .{ "border", "border" },                    .{ "text", "text" },              .{ "muted", "text.muted" },         .{ "line_number", "editor.line_number" }, .{ "selected", "element.selected" },           .{ "accent", "text.accent" },                        .{ "error_text", "error" },
                 .{ "title_bar", "title_bar.background" }, .{ "tab_bar", "tab_bar.background" }, .{ "active_tab", "tab.active_background" }, .{ "panel", "panel.background" }, .{ "editor", "editor.background" }, .{ "status", "status_bar.background" },   .{ "editor_foreground", "editor.foreground" }, .{ "active_line", "editor.active_line.background" },
+                .{ "border_variant", "border.variant" },  .{ "border_focused", "border.focused" }, .{ "elevated_surface", "elevated_surface.background" }, .{ "element_background", "element.background" }, .{ "element_hover", "element.hover" }, .{ "element_selected", "element.selected" }, .{ "ghost_element_hover", "ghost_element.hover" }, .{ "ghost_element_selected", "ghost_element.selected" }, .{ "placeholder", "text.placeholder" },
+                .{ "indent_guide", "panel.indent_guide" }, .{ "indent_guide_active", "panel.indent_guide_active" }, .{ "scrollbar_thumb", "scrollbar.thumb.background" },
             };
             inline for (fields) |pair| if (style.object.get(pair[1])) |value| {
                 if (try parseColor(value)) |color| @field(result, pair[0]) = color;

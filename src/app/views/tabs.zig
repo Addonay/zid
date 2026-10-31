@@ -28,19 +28,32 @@ pub fn drawTabs(self: *App) !void {
         if (x >= bar.x + bar.w) break;
         const w = @min(self.tabWidth(doc), bar.w);
         const r: Rect = .{ .x = x, .y = bar.y, .w = w, .h = bar.h };
-        if (index == self.workspace.active) {
+        const is_active = index == self.workspace.active and !self.keymap_editor_open;
+        if (is_active) {
             try self.fill(r, t.active_tab);
             try self.renderer.rect(x, bar.y, w, 1, t.accent);
         }
         try self.renderer.rect(x + w - 1, bar.y, 1, bar.h, t.border);
         const name = if (doc.path) |path| std.fs.path.basename(path) else "untitled";
         self.clip(.{ .x = x + 8, .y = bar.y, .w = @max(0, w - 36), .h = bar.h });
-        try self.renderer.icon(icons.fileForPath(doc.path orelse ""), x + 10, bar.y + 10, 16, t.muted);
-        try self.renderer.textUi(name, x + 34, bar.y + 23, if (index == self.workspace.active) t.text else t.muted);
+        try self.drawIcon(self.fileIcon(doc.path orelse ""), x + 10, bar.y + 10, 16, t.muted);
+        try self.renderer.textUi(name, x + 34, bar.y + 23, if (is_active) t.text else t.muted);
         self.clip(bar);
         if (doc.dirty()) try self.renderer.icon(icons.svg("circle"), x + w - 22, bar.y + 12, 10, t.muted) else try self.renderer.icon(icons.svg("close"), x + w - 24, bar.y + 10, 14, t.muted);
         try self.tab_hits.append(self.gpa, .{ .rect = r, .index = index });
         x += w;
+    }
+    // The keymap editor is a workspace item like in Zed; it has no document behind it.
+    if (self.keymap_editor_open and x < bar.x + bar.w) {
+        const label = "Keymap Editor";
+        const w = @min(self.renderer.widthUi(label) + 72, bar.x + bar.w - x);
+        try self.fill(.{ .x = x, .y = bar.y, .w = w, .h = bar.h }, t.active_tab);
+        try self.renderer.rect(x, bar.y, w, 1, t.accent);
+        try self.renderer.rect(x + w - 1, bar.y, 1, bar.h, t.border);
+        try self.renderer.icon(icons.svg("ui:notepad"), x + 10, bar.y + 10, 16, t.muted);
+        try self.renderer.textUi(label, x + 34, bar.y + 23, t.text);
+        try self.renderer.icon(icons.svg("close"), x + w - 24, bar.y + 10, 14, t.muted);
+        self.keymap_tab = .{ .x = x, .y = bar.y, .w = w, .h = bar.h };
     }
 }
 pub fn tabWidth(self: *App, doc: *const zid.Document) f32 {

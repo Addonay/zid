@@ -1,34 +1,113 @@
-//! One responsibility per view/controller; application owns retained state.
+//! Zed-shaped project panel. Metrics follow Zed's `ListItem` with `ListItemSpacing::Dense`
+//! (comfortable entry spacing): 24px rows, 6px inner padding, 20px indent steps, 16px icon slot,
+//! 4px icon/label gap, 14px labels, muted icons, and per-depth indent guides at 15px + 20px·depth.
 const std = @import("std");
-const sdl = @import("sdl3");
-const zid = @import("zid");
 const App = @import("../app.zig").App;
-const config = @import("../config.zig");
 const Rect = @import("../layout.zig").Rect;
-const syntax = zid.syntax;
 const icons = @import("icons");
+
+pub const row_h: f32 = 24;
+pub const top_pad: f32 = 4;
+const pad_x: f32 = 6;
+const indent: f32 = 20;
+const icon_size: f32 = 16;
+const gap: f32 = 4;
+const guide_offset: f32 = 15;
+
+/// Rows that fit fully or partially in the panel body.
+pub fn visibleRows(panel_h: f32) usize {
+    return @intFromFloat(@max(0, panel_h - top_pad) / row_h);
+}
+
+pub fn totalRows(self: *App) usize {
+    return if (self.project_collapsed) 1 else 1 + self.visible.items.len;
+}
+
+/// Row index under a panel-relative y coordinate, or null above the first row.
+pub fn rowAt(self: *App, panel: Rect, my: f32) ?usize {
+    if (my < panel.y + top_pad) return null;
+    const row = self.panel_scroll + @as(usize, @intFromFloat((my - panel.y - top_pad) / row_h));
+    return if (row < totalRows(self)) row else null;
+}
+
 pub fn drawPanel(self: *App) !void {
     if (!self.panel_open) return;
     const p = try self.layout.rect(self.layout.panel);
     const t = self.settings.theme;
+
     try self.fill(p, t.panel);
-    self.clip(p);
-    defer self.renderer.setClip(null);
     try self.renderer.rect(p.x + p.w - 1, p.y, 1, p.h, t.border);
-    try self.renderer.textUi(std.fs.path.basename(self.workspace.root), 14, p.y + 24, t.text);
-    const rows: usize = @intFromFloat(@max(0, p.h - 35) / 25);
+    const body: Rect = .{ .x = p.x, .y = p.y, .w = p.w - 1, .h = p.h };
+    self.clip(body);
+    defer self.renderer.setClip(null);
+
+    const total = totalRows(self);
+    const fit = visibleRows(p.h);
     const doc_path: []const u8 = self.workspace.current().path orelse "";
-    var r: usize = 0;
-    while (r <= rows and self.panel_scroll + r < self.visible.items.len) : (r += 1) {
-        const index = self.panel_scroll + r;
-        const e = self.project.entries.items[self.visible.items[index]];
-        const y = p.y + 35 + @as(f32, @floatFromInt(r)) * 25;
-        const active = !e.directory and std.mem.endsWith(u8, doc_path, e.path) and doc_path.len > e.path.len and doc_path[doc_path.len - e.path.len - 1] == '/';
-        if (active or (self.panel_focus and self.panel_row == index)) try self.renderer.rect(4, y, p.w - 9, 25, t.selected);
-        const x = 12 + @as(f32, @floatFromInt(e.depth)) * 16;
-        if (e.directory) {
-            try self.renderer.icon(icons.svg(if (e.collapsed) "chevron_right" else "chevron_down"), x, y + 5, 14, t.muted);
-        } else try self.renderer.icon(icons.fileForPath(e.path), x, y + 4, 16, t.muted);
-        try self.renderer.textUi(std.fs.path.basename(e.path), x + 18, y + 18, if (active) t.text else t.muted);
+    const hovered_row: ?usize = if (body.contains(self.mouse_x, self.mouse_y)) rowAt(self, p, self.mouse_y) else null;
+
+    var slot: usize = 0;
+    while (slot <= fit and self.panel_scroll + slot < total) : (slot += 1) {
+        const row = self.panel_scroll + slot;
+        const y = p.y + top_pad + @as(f32, @floatFromInt(slot)) * row_h;
+
+        var depth: usize = 0;
+        var name: []const u8 = std.fs.path.basename(self.workspace.root);
+        var icon = self.fileIcon("");
+        icon = @import("../icon_theme.zig").folder(self.settings.icon_theme, std.fs.path.basename(self.workspace.root), !self.project_collapsed);
+        var active = false;
+        if (row > 0) {
+            const e = self.project.entries.items[self.visible.items[row - 1]];
+            depth = e.depth + 1;
+            name = e.name;
+            active = !e.directory and isActivePath(doc_path, e.path);
+            icon = if (e.directory) @import("../icon_theme.zig").folder(self.settings.icon_theme, std.fs.path.basename(e.path), !e.collapsed) else self.fileIcon(e.path);
+        }
+
+        const selected = self.panel_focus and self.panel_row == row;
+        const row_rect: Rect = .{ .x = body.x, .y = y, .w = body.w, .h = row_h };
+        if (active or selected) {
+            try self.fill(row_rect, t.element_selected);
+        } else if (hovered_row == row) {
+            try self.fill(row_rect, t.element_hover);
+        }
+        if (selected) try outline(self, row_rect, t.border_focused);
+
+        if (self.settings.show_indent_guides and depth > 0) {
+            for (0..depth) |level| {
+                const gx = p.x + guide_offset + @as(f32, @floatFromInt(level)) * indent;
+                try self.renderer.rect(gx, y, 1, row_h, t.indent_guide);
+            }
+        }
+
+        const icon_x = p.x + pad_x + @as(f32, @floatFromInt(depth)) * indent;
+        try self.drawIcon(icon, icon_x, y + (row_h - icon_size) / 2, icon_size, t.muted);
+        try self.renderer.textUi(name, icon_x + icon_size + gap, y + 17, t.text);
     }
+
+    try drawScrollbar(self, body, total, fit);
+}
+
+fn isActivePath(doc_path: []const u8, entry_path: []const u8) bool {
+    if (std.mem.eql(u8, doc_path, entry_path)) return true;
+    return doc_path.len > entry_path.len and std.mem.endsWith(u8, doc_path, entry_path) and doc_path[doc_path.len - entry_path.len - 1] == '/';
+}
+
+fn outline(self: *App, r: Rect, color: [4]u8) !void {
+    try self.renderer.rect(r.x, r.y, r.w, 1, color);
+    try self.renderer.rect(r.x, r.y + r.h - 1, r.w, 1, color);
+    try self.renderer.rect(r.x, r.y, 1, r.h, color);
+    try self.renderer.rect(r.x + r.w - 1, r.y, 1, r.h, color);
+}
+
+/// Overlay thumb shown only when the tree overflows, like Zed's `scrollbar.show: auto`.
+fn drawScrollbar(self: *App, body: Rect, total: usize, fit: usize) !void {
+    if (total <= fit or fit == 0) return;
+    const track_h = body.h - top_pad * 2;
+    const ratio = @as(f32, @floatFromInt(fit)) / @as(f32, @floatFromInt(total));
+    const thumb_h = @max(24, track_h * ratio);
+    const max_scroll: f32 = @floatFromInt(total - fit);
+    const pos = @min(1, @as(f32, @floatFromInt(self.panel_scroll)) / max_scroll);
+    const thumb_y = body.y + top_pad + (track_h - thumb_h) * pos;
+    try self.renderer.roundRect(body.x + body.w - 8, thumb_y, 6, thumb_h, 3, self.settings.theme.scrollbar_thumb);
 }

@@ -82,6 +82,34 @@ and `src/core` must never import SDL, Zafi or `gfx`. Everything that touches fil
   by time. Entries are budgeted by count and retained-node estimate. The add buffer is
   append-only in stable 1 MiB blocks; compaction of unreachable add bytes is future work.
 
+### Text engine design (2026-11-01): one structure, three borrowed ideas
+
+We compared the current persistent treap with two strong alternatives: JumpRope (an
+indexed skip list whose leaves are small gap buffers, tuned for single-cursor typing) and
+an augmented B+ tree with compact contiguous leaves (Zed's `SumTree`, xi, ropey; fast line
+lookup, cheap snapshots, batch edits). They answer different questions, so Zid takes one
+answer per question instead of running several structures:
+
+| Question | Decision | Borrowed from |
+| --- | --- | --- |
+| Where bytes live | Pieces over the original (memory or positional file reads) and an append-only add buffer | Piece table / current treap: huge files are never loaded |
+| Index shape | Persistent tree with per-node byte/newline/unknown sums; treap today, wide B+ (fan-out 16-32, piece-array leaves) only if traces show it wins | B+ tree |
+| Typing speed | (a) *grow-in-place*: inserting where the last add piece ends appends to the add buffer and path-copies only to lengthen that piece, so typing doesn't fragment into 1-byte pieces; (b) *edit cursor cache*: the last located piece is remembered so sequential byte access is O(1); (c) planned: mutate nodes in place when uniquely owned (refcount 1) | JumpRope (gap-buffer locality without a gap that would break snapshots) |
+| Undo | Each entry holds the previous and next roots plus selections; typing coalesces into one entry | Persistent trees |
+| Line index | Derived from tree sums; no eager per-line array in Document | B+ tree summaries |
+| Multi-cursor | Planned: edits sorted descending, applied as one batch and one undo entry | B+ tree batch edits |
+
+A real gap buffer inside a leaf is rejected: workers read snapshots concurrently, and
+moving a shared gap would mutate published text. Grow-in-place plus uniquely-owned
+mutation gives the same locality.
+
+**Migration.** Step 1 (done in this change): `editor/text_buffer.zig` exposes the old
+Buffer API (len, byteAt, copy, next, previous, replace, toOwnedSlice) plus line queries
+over the treap, and `Document` uses it; history becomes root pairs. Step 2: file-backed
+read-only large-file mode with the background indexer. Step 3: a benchmark harness with
+real editing traces (josephg/editing-traces) and large-file scans; switch the index to
+a B+ tree behind the same API only if the numbers justify it.
+
 ## Syntax highlighting: incremental lexers, not Tree-sitter (for now)
 
 Tree-sitter holds a full concrete syntax tree in memory (often 10-30x the source size)
@@ -198,8 +226,8 @@ Hot paths log timings at debug level (startup phases, file open, index, first pa
 ## Current integration boundary
 
 See README.md for implemented M1 behavior and current limits. The running Document
-is still the gap buffer; the piece treap/Source tests do not establish large-file
-UI support. See STRUCTURE.md for the actual presentation-layer split and planned
+uses the piece treap through `editor/text_buffer.zig` (memory-backed originals only);
+file-backed large-file mode and the background indexer are not wired to the UI yet. See STRUCTURE.md for the actual presentation-layer split and planned
 feature boundaries. AI remains deferred.
 
 Reference-led decisions and inspected source areas are recorded in REFERENCE_NOTES.md.

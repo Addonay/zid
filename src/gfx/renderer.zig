@@ -5,9 +5,16 @@ const gpu = sdl.gpu;
 const Face = @import("../platform/font.zig").Face;
 const assets = @import("assets");
 extern fn zid_svg_alpha([*]const u8, usize, c_int, [*]u8) c_int;
-const FontStyle = enum(u8) { mono, italic, ui };
+extern fn zid_svg_rgba([*]const u8, usize, c_int, [*]u8) c_int;
+const FontStyle = enum(u8) { mono, italic, ui, ui_small };
 const side = 1024;
 const max_vertices = 196608;
+/// Colored (multi-color icon theme) atlas: 16x16 cells of 32px RGBA.
+const color_side = 512;
+const color_bytes = color_side * color_side * 4;
+/// Zed's default UI label size (`LabelSize::Default`, 14px) and `LabelSize::Small` (12px).
+pub const ui_font_px = 14;
+pub const ui_small_font_px = 12;
 const Vertex = extern struct { x: f32, y: f32, u: f32, v: f32, color: [4]u8 };
 const Glyph = struct { style: FontStyle = .mono, index: u32 = 0, stamp: u32 = 0, valid: bool = false, left: i32 = 0, top: i32 = 0, w: u32 = 0, h: u32 = 0 };
 const Icon = struct { hash: u64 = 0, len: usize = 0, size: u8 = 0, stamp: u32 = 0, valid: bool = false };
@@ -15,6 +22,10 @@ pub const Renderer = struct {
     allocator: std.mem.Allocator,
     window: sdl.video.Window,
     device: gpu.Device,
+    format: gpu.TextureFormat = .b8g8r8a8_unorm,
+    target: ?gpu.Texture = null,
+    target_w: u32 = 0,
+    target_h: u32 = 0,
     pipeline: gpu.GraphicsPipeline,
     erase_pipeline: gpu.GraphicsPipeline,
     atlas: gpu.Texture,
@@ -24,10 +35,15 @@ pub const Renderer = struct {
     face: Face,
     italic_face: Face,
     ui_face: Face,
+    ui_small_face: Face,
     pixels: []u8,
     cpu: []Vertex,
     glyphs: [384]Glyph = @splat(.{}),
     icons: [256]Icon = @splat(.{}),
+    color_atlas: gpu.Texture,
+    color_pixels: []u8,
+    color_icons: [256]Icon = @splat(.{}),
+    color_dirty: bool = true,
     radius: f32 = 0,
     count: usize = 0,
     vertex_limit: usize = max_vertices,
@@ -35,8 +51,13 @@ pub const Renderer = struct {
     active: bool = false,
     degraded: bool = false,
     clip: ?sdl.rect.IRect = null,
+    /// Logical frame size; layout and input use logical units.
     w: f32 = 0,
     h: f32 = 0,
+    /// Device pixels per logical unit. Glyphs and icons are rasterized at this density and
+    /// snapped to the device grid, so text stays crisp on HiDPI and fractional scales.
+    scale: f32 = 1,
+    mono_size: u32 = 15,
     pub fn init(a: std.mem.Allocator, window: sdl.video.Window) !Renderer {
         return initSized(a, window, 15);
     }
@@ -51,44 +72,90 @@ pub const Renderer = struct {
         errdefer face.deinit();
         const italic_face = try Face.initBytes(if (@hasDecl(assets, "mono_italic")) assets.mono_italic else assets.mono, size);
         errdefer italic_face.deinit();
-        const ui_face = try Face.initBytes(if (@hasDecl(assets, "ui")) assets.ui else assets.mono, 16);
+        const ui_face = try Face.initBytes(if (@hasDecl(assets, "ui")) assets.ui else assets.mono, ui_font_px);
         errdefer ui_face.deinit();
+        const ui_small_face = try Face.initBytes(if (@hasDecl(assets, "ui")) assets.ui else assets.mono, ui_small_font_px);
+        errdefer ui_small_face.deinit();
         const device = try gpu.Device.init(.{ .spirv = true }, false, "vulkan");
         errdefer device.deinit();
         try device.claimWindow(window);
         errdefer device.releaseWindow(window);
         const vs = try device.createShader(.{ .code = @embedFile("ui.vert.spv"), .entry_point = "main", .format = .{ .spirv = true }, .stage = .vertex });
         defer device.releaseShader(vs);
-        const fs = try device.createShader(.{ .code = @embedFile("ui.frag.spv"), .entry_point = "main", .format = .{ .spirv = true }, .stage = .fragment, .num_samplers = 1 });
+        const fs = try device.createShader(.{ .code = @embedFile("ui.frag.spv"), .entry_point = "main", .format = .{ .spirv = true }, .stage = .fragment, .num_samplers = 2 });
         defer device.releaseShader(fs);
         const vb = [_]gpu.VertexBufferDescription{.{ .slot = 0, .pitch = @sizeOf(Vertex), .input_rate = .vertex }};
         const va = [_]gpu.VertexAttribute{ .{ .location = 0, .buffer_slot = 0, .format = .f32x2, .offset = 0 }, .{ .location = 1, .buffer_slot = 0, .format = .f32x2, .offset = 8 }, .{ .location = 2, .buffer_slot = 0, .format = .u8x4_normalized, .offset = 16 } };
-        const targets = [_]gpu.ColorTargetDescription{.{ .format = try device.getSwapchainTextureFormat(window), .blend_state = .{ .enable_blend = true, .source_color = .src_alpha, .destination_color = .one_minus_src_alpha, .source_alpha = .one, .destination_alpha = .one_minus_src_alpha } }};
+        const swap_format = try device.getSwapchainTextureFormat(window);
+        const targets = [_]gpu.ColorTargetDescription{.{ .format = swap_format, .blend_state = .{ .enable_blend = true, .source_color = .src_alpha, .destination_color = .one_minus_src_alpha, .source_alpha = .one, .destination_alpha = .one_minus_src_alpha } }};
         const pipeline = try device.createGraphicsPipeline(.{ .vertex_shader = vs, .fragment_shader = fs, .vertex_input_state = .{ .vertex_buffer_descriptions = &vb, .vertex_attributes = &va }, .target_info = .{ .color_target_descriptions = &targets } });
         errdefer device.releaseGraphicsPipeline(pipeline);
         const erase_vs = try device.createShader(.{ .code = @embedFile("erase.vert.spv"), .entry_point = "main", .format = .{ .spirv = true }, .stage = .vertex });
         defer device.releaseShader(erase_vs);
         const erase_fs = try device.createShader(.{ .code = @embedFile("erase.frag.spv"), .entry_point = "main", .format = .{ .spirv = true }, .stage = .fragment, .num_uniform_buffers = 1 });
         defer device.releaseShader(erase_fs);
-        const erase_targets = [_]gpu.ColorTargetDescription{.{ .format = try device.getSwapchainTextureFormat(window), .blend_state = .{ .enable_blend = true, .source_color = .zero, .destination_color = .src_alpha, .source_alpha = .zero, .destination_alpha = .src_alpha } }};
+        const erase_targets = [_]gpu.ColorTargetDescription{.{ .format = swap_format, .blend_state = .{ .enable_blend = true, .source_color = .zero, .destination_color = .src_alpha, .source_alpha = .zero, .destination_alpha = .src_alpha } }};
         const erase_pipeline = try device.createGraphicsPipeline(.{ .vertex_shader = erase_vs, .fragment_shader = erase_fs, .target_info = .{ .color_target_descriptions = &erase_targets } });
         errdefer device.releaseGraphicsPipeline(erase_pipeline);
         const atlas = try device.createTexture(.{ .format = .r8_unorm, .usage = .{ .sampler = true }, .width = side, .height = side });
         errdefer device.releaseTexture(atlas);
+        const color_atlas = try device.createTexture(.{ .format = .r8g8b8a8_unorm, .usage = .{ .sampler = true }, .width = color_side, .height = color_side });
+        errdefer device.releaseTexture(color_atlas);
+        const color_pixels = try a.alloc(u8, color_bytes);
+        errdefer a.free(color_pixels);
+        @memset(color_pixels, 0);
         const sampler = try device.createSampler(.{ .address_mode_u = .clamp_to_edge, .address_mode_v = .clamp_to_edge });
         errdefer device.releaseSampler(sampler);
         const vertices = try device.createBuffer(.{ .usage = .{ .vertex = true }, .size = max_vertices * @sizeOf(Vertex) });
         errdefer device.releaseBuffer(vertices);
-        const transfer = try device.createTransferBuffer(.{ .usage = .upload, .size = side * side + max_vertices * @sizeOf(Vertex) });
+        const transfer = try device.createTransferBuffer(.{ .usage = .upload, .size = side * side + color_bytes + max_vertices * @sizeOf(Vertex) });
         errdefer device.releaseTransferBuffer(transfer);
-        return .{ .allocator = a, .window = window, .device = device, .pipeline = pipeline, .erase_pipeline = erase_pipeline, .atlas = atlas, .sampler = sampler, .vertices = vertices, .transfer = transfer, .face = face, .italic_face = italic_face, .ui_face = ui_face, .pixels = pixels, .cpu = cpu };
+        return .{ .allocator = a, .window = window, .device = device, .format = swap_format, .pipeline = pipeline, .erase_pipeline = erase_pipeline, .atlas = atlas, .color_atlas = color_atlas, .color_pixels = color_pixels, .sampler = sampler, .vertices = vertices, .transfer = transfer, .face = face, .italic_face = italic_face, .ui_face = ui_face, .ui_small_face = ui_small_face, .pixels = pixels, .cpu = cpu, .mono_size = size };
+    }
+    fn px(self: *const Renderer, logical: u32) u32 {
+        return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(logical)) * self.scale))));
+    }
+    /// Replace the buffer (mono/italic) faces at a new logical size.
+    pub fn setMonoSize(self: *Renderer, size: u32) !void {
+        const face = try Face.init(self.px(size));
+        errdefer face.deinit();
+        const italic_face = try Face.initBytes(if (@hasDecl(assets, "mono_italic")) assets.mono_italic else assets.mono, self.px(size));
+        self.face.deinit();
+        self.italic_face.deinit();
+        self.face = face;
+        self.italic_face = italic_face;
+        self.mono_size = size;
+        for (&self.glyphs) |*g| if (g.style == .mono or g.style == .italic) {
+            g.valid = false;
+        };
+    }
+    /// Re-rasterize every face for a new device pixel density (window moved or scale changed).
+    pub fn setScale(self: *Renderer, scale: f32) !void {
+        if (!std.math.isFinite(scale) or scale <= 0 or scale == self.scale) return;
+        const old = self.scale;
+        self.scale = scale;
+        errdefer self.scale = old;
+        const ui_bytes = if (@hasDecl(assets, "ui")) assets.ui else assets.mono;
+        const ui_face = try Face.initBytes(ui_bytes, self.px(ui_font_px));
+        errdefer ui_face.deinit();
+        const ui_small_face = try Face.initBytes(ui_bytes, self.px(ui_small_font_px));
+        errdefer ui_small_face.deinit();
+        try self.setMonoSize(self.mono_size);
+        self.ui_face.deinit();
+        self.ui_small_face.deinit();
+        self.ui_face = ui_face;
+        self.ui_small_face = ui_small_face;
+        for (&self.glyphs) |*g| g.valid = false;
     }
     pub fn deinit(self: *Renderer) void {
         self.device.waitForIdle() catch {};
+        if (self.target) |t| self.device.releaseTexture(t);
         self.device.releaseTransferBuffer(self.transfer);
         self.device.releaseBuffer(self.vertices);
         self.device.releaseSampler(self.sampler);
         self.device.releaseTexture(self.atlas);
+        self.device.releaseTexture(self.color_atlas);
+        self.allocator.free(self.color_pixels);
         self.device.releaseGraphicsPipeline(self.erase_pipeline);
         self.device.releaseGraphicsPipeline(self.pipeline);
         self.device.releaseWindow(self.window);
@@ -96,12 +163,15 @@ pub const Renderer = struct {
         self.face.deinit();
         self.italic_face.deinit();
         self.ui_face.deinit();
+        self.ui_small_face.deinit();
         self.allocator.free(self.pixels);
         self.allocator.free(self.cpu);
         self.* = undefined;
     }
-    pub fn begin(self: *Renderer, w: u32, h: u32) !void {
+    /// Starts a frame of `w`×`h` logical units rendered at `scale` device pixels per unit.
+    pub fn begin(self: *Renderer, w: u32, h: u32, scale: f32) !void {
         if (self.active or w == 0 or h == 0) return error.BeginFrameFailed;
+        try self.setScale(scale);
         self.w = @floatFromInt(w);
         self.h = @floatFromInt(h);
         self.count = 0;
@@ -115,6 +185,7 @@ pub const Renderer = struct {
             self.frame = 1;
             for (&self.glyphs) |*g| g.stamp = 0;
             for (&self.icons) |*icon_entry| icon_entry.stamp = 0;
+            for (&self.color_icons) |*icon_entry| icon_entry.stamp = 0;
         }
     }
     pub fn setClip(self: *Renderer, clip: ?sdl.rect.IRect) void {
@@ -151,8 +222,46 @@ pub const Renderer = struct {
         for (0..6) |i| self.cpu[self.count + i] = .{ .x = xs[ix[i]], .y = ys[iy[i]], .u = us[ix[i]], .v = vs[iy[i]], .color = color };
         self.count += 6;
     }
+    /// Solid rectangle with edges snapped to device pixels; a non-empty side never
+    /// collapses below one device pixel, so hairlines stay crisp at fractional scales.
     pub fn rect(self: *Renderer, x: f32, y: f32, w: f32, h: f32, color: [4]u8) !void {
-        try self.quad(x, y, w, h, 0.5 / 1024.0, 0.5 / 1024.0, 0, 0, color);
+        if (w <= 0 or h <= 0) return;
+        const s = self.scale;
+        const x0 = @round(x * s);
+        const y0 = @round(y * s);
+        const x1 = @max(x0 + 1, @round((x + w) * s));
+        const y1 = @max(y0 + 1, @round((y + h) * s));
+        try self.quad(x0 / s, y0 / s, (x1 - x0) / s, (y1 - y0) / s, 0.5 / 1024.0, 0.5 / 1024.0, 0, 0, color);
+    }
+    /// Filled rounded rectangle; corners are built from anti-aliased device-pixel scanlines.
+    pub fn roundRect(self: *Renderer, x: f32, y: f32, w: f32, h: f32, radius: f32, color: [4]u8) !void {
+        const s = self.scale;
+        const r = @floor(@max(0, @min(radius, @min(w, h) / 2)) * s);
+        if (r < 1) return self.rect(x, y, w, h, color);
+        const px_w = w * s;
+        const px_h = h * s;
+        try self.rect(x, y + r / s, w, (px_h - 2 * r) / s, color);
+        var i: f32 = 0;
+        while (i < r) : (i += 1) {
+            const dy = r - (i + 0.5);
+            const inset = r - @sqrt(r * r - dy * dy);
+            const full = @ceil(inset);
+            var edge = color;
+            edge[3] = @intFromFloat(@as(f32, @floatFromInt(color[3])) * (full - inset));
+            for ([_]f32{ i, px_h - 1 - i }) |row| {
+                const ry = y + row / s;
+                try self.rect(x + full / s, ry, (px_w - 2 * full) / s, 1 / s, color);
+                if (full > 0 and edge[3] > 0) {
+                    try self.rect(x + (full - 1) / s, ry, 1 / s, 1 / s, edge);
+                    try self.rect(x + (px_w - full) / s, ry, 1 / s, 1 / s, edge);
+                }
+            }
+        }
+    }
+    /// Rounded rectangle with a one-pixel border.
+    pub fn roundBox(self: *Renderer, x: f32, y: f32, w: f32, h: f32, radius: f32, fill: [4]u8, border: [4]u8) !void {
+        try self.roundRect(x, y, w, h, radius, border);
+        try self.roundRect(x + 1, y + 1, w - 2, h - 2, @max(0, radius - 1), fill);
     }
     fn glyph(self: *Renderer, style: FontStyle, face: Face, index: u32) ?usize {
         var slot: ?usize = null;
@@ -186,6 +295,7 @@ pub const Renderer = struct {
             .mono => self.face,
             .italic => self.italic_face,
             .ui => self.ui_face,
+            .ui_small => self.ui_small_face,
         };
         var pen: f32 = 0;
         var off: usize = 0;
@@ -202,14 +312,19 @@ pub const Renderer = struct {
                 const p = face.position(@intCast(i));
                 if (draw) if (self.glyph(style, face, p.index)) |slot| {
                     const g = self.glyphs[slot];
-                    try self.quad(x + pen + @as(f32, @floatFromInt(p.x_offset)) / 64 + @as(f32, @floatFromInt(g.left)), baseline - @as(f32, @floatFromInt(p.y_offset)) / 64 - @as(f32, @floatFromInt(g.top)), @floatFromInt(g.w), @floatFromInt(g.h), @as(f32, @floatFromInt((slot % 32) * 32)) / side, @as(f32, @floatFromInt((slot / 32) * 64)) / side, @as(f32, @floatFromInt(g.w)) / side, @as(f32, @floatFromInt(g.h)) / side, color);
+                    // Metrics are device pixels; snap the bitmap origin to the device grid so
+                    // nearest sampling maps texels 1:1 (no dropped or doubled columns).
+                    const s = self.scale;
+                    const gx = @round(x * s + pen + @as(f32, @floatFromInt(p.x_offset)) / 64 + @as(f32, @floatFromInt(g.left))) / s;
+                    const gy = @round(baseline * s - @as(f32, @floatFromInt(p.y_offset)) / 64 - @as(f32, @floatFromInt(g.top))) / s;
+                    try self.quad(gx, gy, @as(f32, @floatFromInt(g.w)) / s, @as(f32, @floatFromInt(g.h)) / s, @as(f32, @floatFromInt((slot % 32) * 32)) / side, @as(f32, @floatFromInt((slot / 32) * 64)) / side, @as(f32, @floatFromInt(g.w)) / side, @as(f32, @floatFromInt(g.h)) / side, color);
                 } else {
                     // A visible replacement preserves the advance and lets the
                     // editing session continue if a font or atlas limit is hit.
                     self.degraded = true;
-                    const gx = x + pen + 1;
-                    const gh = face.space() * 1.3;
-                    const gw = @max(3, @as(f32, @floatFromInt(p.x_advance)) / 64 - 2);
+                    const gx = x + pen / self.scale + 1;
+                    const gh = face.space() / self.scale * 1.3;
+                    const gw = @max(3, @as(f32, @floatFromInt(p.x_advance)) / 64 / self.scale - 2);
                     try self.rect(gx, baseline - gh, gw, 1, color);
                     try self.rect(gx, baseline - gh, 1, gh, color);
                     try self.rect(gx + gw - 1, baseline - gh, 1, gh, color);
@@ -219,7 +334,7 @@ pub const Renderer = struct {
             }
             off = segment_end;
         }
-        return pen;
+        return pen / self.scale;
     }
     pub fn text(self: *Renderer, value: []const u8, x: f32, baseline: f32, color: [4]u8) !void {
         _ = try self.drawText(.mono, value, x, baseline, color, true);
@@ -233,6 +348,13 @@ pub const Renderer = struct {
     pub fn textItalic(self: *Renderer, value: []const u8, x: f32, baseline: f32, color: [4]u8) !void {
         _ = try self.drawText(.italic, value, x, baseline, color, true);
     }
+    /// Zed `LabelSize::Small` (12px) UI label.
+    pub fn textSmall(self: *Renderer, value: []const u8, x: f32, baseline: f32, color: [4]u8) !void {
+        _ = try self.drawText(.ui_small, value, x, baseline, color, true);
+    }
+    pub fn widthSmall(self: *Renderer, value: []const u8) f32 {
+        return self.drawText(.ui_small, value, 0, 0, undefined, false) catch 0;
+    }
     pub fn widthUi(self: *Renderer, value: []const u8) f32 {
         return self.drawText(.ui, value, 0, 0, undefined, false) catch 0;
     }
@@ -245,7 +367,8 @@ pub const Renderer = struct {
     pub fn icon(self: *Renderer, svg: []const u8, x: f32, y: f32, size: f32, color: [4]u8) !void {
         if (!self.active) return error.BeginFrameFailed;
         if (!std.math.isFinite(size) or size <= 0 or size > 32) return error.InvalidIconSize;
-        const n: u8 = @intFromFloat(@max(1, @round(size)));
+        // Rasterize at device density (capped by the 32px atlas cell).
+        const n: u8 = @intFromFloat(@min(32, @max(1, @round(size * self.scale))));
         const hash = std.hash.Wyhash.hash(0, svg);
         var slot: ?usize = null;
         var vacant: ?usize = null;
@@ -270,7 +393,43 @@ pub const Renderer = struct {
             self.icons[i] = .{ .hash = hash, .len = svg.len, .size = n, .valid = true };
         }
         self.icons[i].stamp = self.frame;
-        try self.quad(@round(x), @round(y), size, size, @as(f32, @floatFromInt(sx)) / side, @as(f32, @floatFromInt(sy)) / side, @as(f32, @floatFromInt(n)) / side, @as(f32, @floatFromInt(n)) / side, color);
+        try self.quad(@round(x * self.scale) / self.scale, @round(y * self.scale) / self.scale, size, size, @as(f32, @floatFromInt(sx)) / side, @as(f32, @floatFromInt(sy)) / side, @as(f32, @floatFromInt(n)) / side, @as(f32, @floatFromInt(n)) / side, color);
+    }
+    /// Multi-color SVG icon (icon themes such as Catppuccin), drawn with its own colors;
+    /// `alpha` scales opacity. Rasterized at device density into the RGBA atlas.
+    pub fn colorIcon(self: *Renderer, svg: []const u8, x: f32, y: f32, size: f32, alpha: u8) !void {
+        if (!self.active) return error.BeginFrameFailed;
+        if (!std.math.isFinite(size) or size <= 0 or size > 32) return error.InvalidIconSize;
+        const n: u8 = @intFromFloat(@min(32, @max(1, @round(size * self.scale))));
+        const hash = std.hash.Wyhash.hash(1, svg);
+        var slot: ?usize = null;
+        var vacant: ?usize = null;
+        for (&self.color_icons, 0..) |*entry, i| {
+            if (entry.valid and entry.hash == hash and entry.len == svg.len and entry.size == n) {
+                slot = i;
+                break;
+            }
+            if (vacant == null and entry.stamp != self.frame) vacant = i;
+        }
+        const i = slot orelse vacant orelse {
+            self.degraded = true;
+            return;
+        };
+        const cells = color_side / 32;
+        const sx = (i % cells) * 32;
+        const sy = (i / cells) * 32;
+        if (slot == null) {
+            var rgba: [32 * 32 * 4]u8 = undefined;
+            if (zid_svg_rgba(svg.ptr, svg.len, n, &rgba) == 0) return error.SvgParse;
+            for (0..32) |row| @memset(self.color_pixels[((sy + row) * color_side + sx) * 4 ..][0 .. 32 * 4], 0);
+            for (0..n) |row| @memcpy(self.color_pixels[((sy + row) * color_side + sx) * 4 ..][0 .. @as(usize, n) * 4], rgba[row * @as(usize, n) * 4 ..][0 .. @as(usize, n) * 4]);
+            self.color_icons[i] = .{ .hash = hash, .len = svg.len, .size = n, .valid = true };
+            self.color_dirty = true;
+        }
+        self.color_icons[i].stamp = self.frame;
+        // u >= 2 selects the color atlas in ui.frag.
+        const cs: f32 = @floatFromInt(color_side);
+        try self.quad(@round(x * self.scale) / self.scale, @round(y * self.scale) / self.scale, size, size, 2 + @as(f32, @floatFromInt(sx)) / cs, @as(f32, @floatFromInt(sy)) / cs, @as(f32, @floatFromInt(n)) / cs, @as(f32, @floatFromInt(n)) / cs, .{ 255, 255, 255, alpha });
     }
     /// Reserve 4096 quads for status, caret and save/discard overlays. Dense
     /// document content may degrade, but must never consume the modal budget.
@@ -288,32 +447,103 @@ pub const Renderer = struct {
         self.active = false;
         const cmd = try self.device.acquireCommandBuffer();
         errdefer cmd.cancel() catch {};
-        const swap = (try cmd.waitAndAcquireSwapchainTexture(self.window))[0] orelse {
-            try cmd.submit();
-            return;
-        };
         const mapped = try self.device.mapTransferBuffer(self.transfer, true);
+        // Transfer layout: [mask atlas][color atlas][vertices]. The color atlas is only
+        // copied and uploaded when an icon was rasterized into it.
+        const vertex_offset = side * side + color_bytes;
         @memcpy(mapped[0 .. side * side], self.pixels);
+        const upload_color = self.color_dirty;
+        if (upload_color) @memcpy(mapped[side * side ..][0..color_bytes], self.color_pixels);
         const bytes = std.mem.sliceAsBytes(self.cpu[0..self.count]);
-        @memcpy(mapped[side * side ..][0..bytes.len], bytes);
+        @memcpy(mapped[vertex_offset..][0..bytes.len], bytes);
         self.device.unmapTransferBuffer(self.transfer);
         const copy = cmd.beginCopyPass();
         copy.uploadToTexture(.{ .transfer_buffer = self.transfer, .offset = 0, .pixels_per_row = side, .rows_per_layer = side }, .{ .texture = self.atlas, .width = side, .height = side, .depth = 1 }, true);
-        if (self.count > 0) copy.uploadToBuffer(.{ .transfer_buffer = self.transfer, .offset = side * side }, .{ .buffer = self.vertices, .offset = 0, .size = @intCast(bytes.len) }, true);
+        if (upload_color) {
+            copy.uploadToTexture(.{ .transfer_buffer = self.transfer, .offset = side * side, .pixels_per_row = color_side, .rows_per_layer = color_side }, .{ .texture = self.color_atlas, .width = color_side, .height = color_side, .depth = 1 }, false);
+            self.color_dirty = false;
+        }
+        if (self.count > 0) copy.uploadToBuffer(.{ .transfer_buffer = self.transfer, .offset = vertex_offset }, .{ .buffer = self.vertices, .offset = 0, .size = @intCast(bytes.len) }, true);
         copy.end();
-        const targets = [_]gpu.ColorTargetInfo{.{ .texture = swap, .clear_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .load = .clear, .store = .store }};
+
+        const uw: u32 = @intFromFloat(@round(self.w * self.scale));
+        const uh: u32 = @intFromFloat(@round(self.h * self.scale));
+        if (self.target == null or self.target_w != uw or self.target_h != uh) {
+            if (self.target) |old| self.device.releaseTexture(old);
+            self.target = try self.device.createTexture(.{
+                .format = self.format,
+                .usage = .{ .color_target = true, .sampler = true },
+                .width = uw,
+                .height = uh,
+            });
+            self.target_w = uw;
+            self.target_h = uh;
+        }
+
+        const targets = [_]gpu.ColorTargetInfo{.{ .texture = self.target.?, .clear_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .load = .clear, .store = .store }};
         const pass = cmd.beginRenderPass(&targets, null);
         pass.bindGraphicsPipeline(self.pipeline);
         pass.bindVertexBuffers(0, &.{.{ .buffer = self.vertices, .offset = 0 }});
-        pass.bindFragmentSamplers(0, &.{.{ .texture = self.atlas, .sampler = self.sampler }});
+        pass.bindFragmentSamplers(0, &.{ .{ .texture = self.atlas, .sampler = self.sampler }, .{ .texture = self.color_atlas, .sampler = self.sampler } });
         if (self.count > 0) pass.drawPrimitives(@intCast(self.count), 1, 0, 0);
         if (self.radius > 0) {
-            const params = [4]f32{ self.w, self.h, self.radius, 0 };
+            const params = [4]f32{ @floatFromInt(uw), @floatFromInt(uh), self.radius * self.scale, 0 };
             cmd.pushFragmentUniformData(0, std.mem.asBytes(&params));
             pass.bindGraphicsPipeline(self.erase_pipeline);
             pass.drawPrimitives(3, 1, 0, 0);
         }
         pass.end();
+
+        // Blit to window swapchain if available (hidden windows or minimized displays may return null)
+        const swap_res = cmd.waitAndAcquireSwapchainTexture(self.window) catch null;
+        if (swap_res) |res| {
+            if (res[0]) |swap_tex| {
+                cmd.blitTexture(.{
+                    .source = .{ .texture = self.target.?, .mip_level = 0, .layer_or_depth_plane = 0, .region = .{ .x = 0, .y = 0, .w = uw, .h = uh } },
+                    .destination = .{ .texture = swap_tex, .mip_level = 0, .layer_or_depth_plane = 0, .region = .{ .x = 0, .y = 0, .w = res[1], .h = res[2] } },
+                    .load_op = .do_not_care,
+                    .clear_color = .{},
+                    .flip_mode = .{},
+                    .filter = .nearest,
+                    .cycle = false,
+                });
+            }
+        }
+
         try cmd.submit();
+    }
+    pub fn readPixels(self: *Renderer, alloc: std.mem.Allocator) !struct { w: u32, h: u32, data: []u8 } {
+        if (self.target == null) return error.NoRenderTarget;
+        const w = self.target_w;
+        const h = self.target_h;
+        const bytes = w * h * 4;
+        const transfer = try self.device.createTransferBuffer(.{ .usage = .download, .size = bytes });
+        defer self.device.releaseTransferBuffer(transfer);
+        const cmd = try self.device.acquireCommandBuffer();
+        const copy = cmd.beginCopyPass();
+        copy.downloadFromTexture(
+            .{ .texture = self.target.?, .width = w, .height = h, .depth = 1 },
+            .{ .transfer_buffer = transfer, .offset = 0 },
+        );
+        copy.end();
+        const fence = try cmd.submitAndAcquireFence();
+        defer self.device.releaseFence(fence);
+        try self.device.waitForFences(true, &.{fence});
+        const mapped = try self.device.mapTransferBuffer(transfer, false);
+        const data = try alloc.alloc(u8, bytes);
+        errdefer alloc.free(data);
+        if (self.format == .b8g8r8a8_unorm) {
+            var i: usize = 0;
+            while (i < bytes) : (i += 4) {
+                data[i] = mapped[i + 2]; // R
+                data[i + 1] = mapped[i + 1]; // G
+                data[i + 2] = mapped[i]; // B
+                data[i + 3] = mapped[i + 3]; // A
+            }
+        } else {
+            @memcpy(data, mapped[0..bytes]);
+        }
+        self.device.unmapTransferBuffer(transfer);
+        return .{ .w = w, .h = h, .data = data };
     }
 };

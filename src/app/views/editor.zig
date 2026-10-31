@@ -28,7 +28,7 @@ pub fn drawEditor(self: *App) !void {
     var row = checkpoint * 64;
     const selected = doc.selection();
     const cursor_row = doc.lineOf(doc.cursor);
-    while (row < doc.lines.items.len and row < doc.scroll_line + self.pageLines() + 1) : (row += 1) {
+    while (row < doc.lineCount() and row < doc.scroll_line + self.pageLines() + 1) : (row += 1) {
         const bytes = self.lineBytes(doc, row);
         var sink = syntax.Sink.init(&spans);
         state = syntax.lexLine(lang, state, bytes, &sink);
@@ -41,7 +41,7 @@ pub fn drawEditor(self: *App) !void {
         const n = try std.fmt.bufPrint(&number, "{d}", .{row + 1});
         try self.renderer.text(n, e.x + 48 - self.renderer.width(n), baseline, if (row == cursor_row) t.text else t.line_number);
         const x = e.x + 64 - doc.scroll_x;
-        const start = doc.lines.items[row];
+        const start = doc.lineStart(row);
         self.clip(.{ .x = e.x + 60, .y = e.y, .w = @max(0, e.w - 60), .h = e.h });
         const sel_start = @min(bytes.len, selected.start -| start);
         const sel_end = @min(bytes.len, selected.end -| start);
@@ -60,8 +60,8 @@ pub fn drawEditor(self: *App) !void {
         if (from < bytes.len) try self.drawRun(bytes, from, bytes.len, x, baseline, t.editor_foreground, e, false);
         self.clip(e);
     }
-    if (doc.lines.items.len > self.pageLines()) {
-        const total: f32 = @floatFromInt(doc.lines.items.len);
+    if (doc.lineCount() > self.pageLines()) {
+        const total: f32 = @floatFromInt(doc.lineCount());
         const h = @max(20, e.h * @as(f32, @floatFromInt(self.pageLines())) / total);
         const y = e.y + (e.h - h) * @as(f32, @floatFromInt(doc.scroll_line)) / @max(1, total - 1);
         try self.renderer.rect(e.x + e.w - 8, y, 5, h, t.selected);
@@ -103,7 +103,7 @@ pub fn drawCaret(self: *App) !void {
     if (row < doc.scroll_line or row >= doc.scroll_line + self.pageLines() + 1) return;
     const e = try self.layout.rect(self.layout.editor);
     const bytes = self.lineBytes(doc, row);
-    const offset = @min(bytes.len, doc.cursor - doc.lines.items[row]);
+    const offset = @min(bytes.len, doc.cursor - doc.lineStart(row));
     const y = e.y + 8 + @as(f32, @floatFromInt(row - doc.scroll_line)) * @as(f32, @floatFromInt(self.settings.line_height));
     self.clip(.{ .x = e.x + 60, .y = e.y, .w = @max(0, e.w - 60), .h = e.h });
     defer self.renderer.setClip(null);

@@ -17,6 +17,8 @@ pub fn build(b: *std.Build) void {
     app.addCSourceFile(.{ .file = b.path("src/platform/font.c"), .flags = &.{"-std=c23"} });
     app.linkSystemLibrary("m", .{});
     app.addAnonymousImport("theme_assets", .{ .root_source_file = b.path("assets/themes.zig") });
+    app.addAnonymousImport("keymap_assets", .{ .root_source_file = b.path("assets/keymaps.zig") });
+    app.addAnonymousImport("icon_theme_assets", .{ .root_source_file = b.path("assets/icon_themes/catppuccin_latte.zig") });
     const exe = b.addExecutable(.{ .name = "zid", .root_module = app });
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);
@@ -34,6 +36,8 @@ pub fn build(b: *std.Build) void {
     ui_tests.addAnonymousImport("icons", .{ .root_source_file = b.path("assets/icons.zig") });
     b.step("test-ui", "Test shell layout and configuration").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = ui_tests })).step);
     ui_tests.addAnonymousImport("theme_assets", .{ .root_source_file = b.path("assets/themes.zig") });
+    ui_tests.addAnonymousImport("keymap_assets", .{ .root_source_file = b.path("assets/keymaps.zig") });
+    ui_tests.addAnonymousImport("icon_theme_assets", .{ .root_source_file = b.path("assets/icon_themes/catppuccin_latte.zig") });
     const smoke = b.addRunArtifact(exe);
     smoke.addArg("--check");
     b.step("smoke", "Headless SDL3, FreeType, HarfBuzz and Zafi integration check").dependOn(&smoke.step);

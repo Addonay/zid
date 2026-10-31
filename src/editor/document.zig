@@ -1,11 +1,11 @@
 const std = @import("std");
-const Buffer = @import("buffer.zig").Buffer;
+const TextBuffer = @import("text_buffer.zig").TextBuffer;
+const Node = @import("../text/piece_tree.zig").Node;
 
 pub const Document = struct {
     allocator: std.mem.Allocator,
-    buffer: Buffer,
+    buffer: TextBuffer,
     path: ?[:0]u8 = null,
-    lines: std.ArrayList(usize) = .empty,
     cursor: usize = 0,
     anchor: usize = 0,
     scroll_line: usize = 0,
@@ -35,23 +35,27 @@ pub const Document = struct {
         }
     };
 
+    /// An undo entry is a pair of retained tree versions plus selection state; it never
+    /// copies text. Consecutive typing coalesces into one entry (see `insert`).
     const Edit = struct {
-        start: usize,
-        removed: []u8,
-        inserted: []u8,
+        before: ?*Node,
+        after: ?*Node,
         before_cursor: usize,
         before_anchor: usize,
+        after_cursor: usize,
+        after_anchor: usize,
         before_revision: u64,
         after_revision: u64,
+        typing: bool,
     };
     pub fn init(allocator: std.mem.Allocator, text: []const u8, path: ?[]const u8) !Document {
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
         if (std.mem.indexOfScalar(u8, text, 0) != null) return error.BinaryFile;
-        var self: Document = .{ .allocator = allocator, .buffer = try Buffer.init(allocator, text), .crlf = std.mem.indexOf(u8, text, "\r\n") != null };
+        var self: Document = .{ .allocator = allocator, .buffer = try TextBuffer.init(allocator, text), .crlf = std.mem.indexOf(u8, text, "\r\n") != null };
         errdefer self.deinit();
         if (path) |value| self.path = try allocator.dupeSentinel(u8, value, 0);
-        try self.reindex();
-        for (self.lines.items, 0..) |start, row| if (self.lineEnd(row) - start > max_line_bytes) {
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |line| if (line.len > max_line_bytes) {
             self.preview_only = true;
             break;
         };
@@ -60,42 +64,41 @@ pub const Document = struct {
     pub fn deinit(self: *Document) void {
         for (self.history.items) |edit| self.freeEdit(edit);
         self.history.deinit(self.allocator);
-        self.lines.deinit(self.allocator);
         if (self.path) |path| self.allocator.free(path);
         self.buffer.deinit();
     }
     fn freeEdit(self: *Document, edit: Edit) void {
-        self.allocator.free(edit.removed);
-        self.allocator.free(edit.inserted);
+        self.buffer.releaseRoot(edit.before);
+        self.buffer.releaseRoot(edit.after);
     }
     pub fn dirty(self: *const Document) bool {
         return self.revision != self.saved_revision;
     }
-    fn reindex(self: *Document) !void {
-        var count: usize = 1;
-        for (0..self.buffer.len()) |index| if (self.buffer.byteAt(index) == '\n') {
-            count += 1;
-        };
-        try self.lines.ensureTotalCapacity(self.allocator, count);
-        self.lines.clearRetainingCapacity();
-        self.lines.appendAssumeCapacity(0);
-        for (0..self.buffer.len()) |index| if (self.buffer.byteAt(index) == '\n') {
-            self.lines.appendAssumeCapacity(index + 1);
-        };
+    pub fn lineCount(self: *const Document) usize {
+        return self.buffer.lineCount();
+    }
+    pub fn lineStart(self: *const Document, line: usize) usize {
+        return self.buffer.lineStart(line);
     }
     pub fn lineOf(self: *const Document, offset: usize) usize {
-        var low: usize = 0;
-        var high = self.lines.items.len;
-        while (low + 1 < high) {
-            const middle = low + (high - low) / 2;
-            if (self.lines.items[middle] <= offset) low = middle else high = middle;
-        }
-        return low;
+        return self.buffer.lineOf(offset);
     }
     pub fn lineEnd(self: *const Document, line: usize) usize {
-        var end = if (line + 1 < self.lines.items.len) self.lines.items[line + 1] - 1 else self.buffer.len();
-        if (end > self.lines.items[line] and self.buffer.byteAt(end - 1) == '\r') end -= 1;
+        var end = if (line + 1 < self.lineCount()) self.lineStart(line + 1) - 1 else self.buffer.len();
+        if (end > self.lineStart(line) and self.buffer.byteAt(end - 1) == '\r') end -= 1;
         return end;
+    }
+    /// Sets the selection after an edit; redo then restores exactly this selection.
+    pub fn setSelection(self: *Document, anchor: usize, cursor: usize) void {
+        self.anchor = @min(anchor, self.buffer.len());
+        self.cursor = @min(cursor, self.buffer.len());
+        if (self.history_index > 0) {
+            const last = &self.history.items[self.history_index - 1];
+            if (last.after_revision == self.revision) {
+                last.after_cursor = self.cursor;
+                last.after_anchor = self.anchor;
+            }
+        }
     }
     pub fn selection(self: *const Document) struct { start: usize, end: usize } {
         return .{ .start = @min(self.cursor, self.anchor), .end = @max(self.cursor, self.anchor) };
@@ -114,23 +117,35 @@ pub const Document = struct {
     pub fn moveVertical(self: *Document, delta: i32, extend: bool) void {
         const row = self.lineOf(self.cursor);
         var column: usize = 0;
-        var byte = self.lines.items[row];
+        var byte = self.lineStart(row);
         while (byte < self.cursor) : (column += 1) byte = self.buffer.next(byte);
-        const target: usize = @intCast(std.math.clamp(@as(i64, @intCast(row)) + delta, 0, @as(i64, @intCast(self.lines.items.len - 1))));
-        byte = self.lines.items[target];
+        const target: usize = @intCast(std.math.clamp(@as(i64, @intCast(row)) + delta, 0, @as(i64, @intCast(self.lineCount() - 1))));
+        byte = self.lineStart(target);
         for (0..column) |_| {
             if (byte >= self.lineEnd(target)) break;
             byte = self.buffer.next(byte);
         }
         self.move(byte, extend);
     }
+    /// Replaces the selection with `text` (typing, paste, delete); the cursor lands after it.
     pub fn insert(self: *Document, text: []const u8) !void {
+        const range = self.selection();
+        const typing = range.start == range.end and text.len > 0 and std.mem.indexOfAny(u8, text, "\r\n") == null;
+        try self.applyEdit(range.start, range.end, text, typing);
+    }
+    /// Replaces [start, end) with `text` as one undo step, independent of the selection.
+    /// The cursor lands after the inserted text; callers may then adjust the selection.
+    pub fn replaceRange(self: *Document, start: usize, end: usize, text: []const u8) !void {
+        try self.applyEdit(start, end, text, false);
+    }
+    fn applyEdit(self: *Document, start: usize, end: usize, text: []const u8, typing: bool) !void {
         if (self.preview_only) return error.ReadOnlyLongLinePreview;
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
         if (std.mem.indexOfScalar(u8, text, 0) != null) return error.BinaryFile;
-        const range = self.selection();
+        std.debug.assert(start <= end and end <= self.buffer.len());
+        const range: struct { start: usize, end: usize } = .{ .start = start, .end = end };
         // Validate the resulting affected lines before modifying storage/history.
-        var width = range.start - self.lines.items[self.lineOf(range.start)];
+        var width = range.start - self.lineStart(self.lineOf(range.start));
         for (text) |byte| {
             if (byte == '\n') width = 0 else width += 1;
             if (width > max_line_bytes) return error.LineTooLong;
@@ -138,30 +153,46 @@ pub const Document = struct {
         width += self.lineEnd(self.lineOf(range.end)) -| range.end;
         if (width > max_line_bytes) return error.LineTooLong;
         if (range.start == range.end and text.len == 0) return;
-        const removed = try self.allocator.alloc(u8, range.end - range.start);
-        errdefer self.allocator.free(removed);
-        self.buffer.copy(range.start, removed);
-        const inserted = try self.allocator.dupe(u8, text);
-        errdefer self.allocator.free(inserted);
-        try self.history.ensureTotalCapacity(self.allocator, self.history_index + 1);
-        try self.lines.ensureTotalCapacity(self.allocator, self.lines.items.len + std.mem.countScalar(u8, text, '\n'));
+        // Coalesce typing into the previous entry while it continues at the same place,
+        // and break groups at word boundaries so undo removes roughly a word at a time.
+        const coalesce = typing and self.history_index == self.history.items.len and self.history_index > 0 and blk: {
+            const last = self.history.items[self.history_index - 1];
+            const starts_word = text[0] != ' ' and range.start > 0 and self.buffer.byteAt(range.start - 1) == ' ';
+            break :blk last.typing and last.after_revision == self.revision and last.after_cursor == range.start and !starts_word;
+        };
+        if (!coalesce) try self.history.ensureTotalCapacity(self.allocator, self.history_index + 1);
+        const before = self.buffer.root();
+        errdefer self.buffer.releaseRoot(before);
         try self.buffer.replace(range.start, range.end, text);
-        for (self.history.items[self.history_index..]) |edit| self.freeEdit(edit);
-        self.history.shrinkRetainingCapacity(self.history_index);
-        self.history.appendAssumeCapacity(.{
-            .start = range.start,
-            .removed = removed,
-            .inserted = inserted,
-            .before_cursor = self.cursor,
-            .before_anchor = self.anchor,
-            .before_revision = self.revision,
-            .after_revision = self.next_revision,
-        });
-        self.history_index += 1;
+        const after = self.buffer.root();
+        const after_cursor = range.start + text.len;
+        if (coalesce) {
+            self.buffer.releaseRoot(before);
+            const last = &self.history.items[self.history_index - 1];
+            self.buffer.releaseRoot(last.after);
+            last.after = after;
+            last.after_cursor = after_cursor;
+            last.after_anchor = after_cursor;
+            last.after_revision = self.next_revision;
+        } else {
+            for (self.history.items[self.history_index..]) |edit| self.freeEdit(edit);
+            self.history.shrinkRetainingCapacity(self.history_index);
+            self.history.appendAssumeCapacity(.{
+                .before = before,
+                .after = after,
+                .before_cursor = self.cursor,
+                .before_anchor = self.anchor,
+                .after_cursor = after_cursor,
+                .after_anchor = after_cursor,
+                .before_revision = self.revision,
+                .after_revision = self.next_revision,
+                .typing = typing,
+            });
+            self.history_index += 1;
+        }
         self.revision = self.next_revision;
         self.next_revision += 1;
-        self.move(range.start + text.len, false);
-        try self.reindex();
+        self.move(after_cursor, false);
     }
     pub fn backspace(self: *Document) !void {
         const previous_anchor = self.anchor;
@@ -184,23 +215,20 @@ pub const Document = struct {
     pub fn undo(self: *Document) !void {
         if (self.history_index == 0) return;
         const edit = self.history.items[self.history_index - 1];
-        try self.lines.ensureTotalCapacity(self.allocator, self.lines.items.len + std.mem.countScalar(u8, edit.removed, '\n'));
-        try self.buffer.replace(edit.start, edit.start + edit.inserted.len, edit.removed);
+        self.buffer.setRoot(edit.before);
         self.history_index -= 1;
-        self.cursor = edit.before_cursor;
-        self.anchor = edit.before_anchor;
+        self.cursor = @min(edit.before_cursor, self.buffer.len());
+        self.anchor = @min(edit.before_anchor, self.buffer.len());
         self.revision = edit.before_revision;
-        try self.reindex();
     }
     pub fn redo(self: *Document) !void {
         if (self.history_index == self.history.items.len) return;
         const edit = self.history.items[self.history_index];
-        try self.lines.ensureTotalCapacity(self.allocator, self.lines.items.len + std.mem.countScalar(u8, edit.inserted, '\n'));
-        try self.buffer.replace(edit.start, edit.start + edit.removed.len, edit.inserted);
+        self.buffer.setRoot(edit.after);
         self.history_index += 1;
-        self.move(edit.start + edit.inserted.len, false);
+        self.cursor = @min(edit.after_cursor, self.buffer.len());
+        self.anchor = @min(edit.after_anchor, self.buffer.len());
         self.revision = edit.after_revision;
-        try self.reindex();
     }
 };
 
@@ -230,7 +258,7 @@ test "selection replacement, undo, redo and branching preserve saved revision" {
 test "UTF-8 deletion and CRLF indexing retain file bytes" {
     var document = try Document.init(std.testing.allocator, "é\r\n中\r\n", null);
     defer document.deinit();
-    try std.testing.expectEqual(@as(usize, 3), document.lines.items.len);
+    try std.testing.expectEqual(@as(usize, 3), document.lineCount());
     try std.testing.expectEqual(@as(usize, 2), document.lineEnd(0));
     document.move(2, false);
     try document.backspace();
@@ -296,4 +324,20 @@ test "failed newline deletion preserves cursor and selection" {
     try std.testing.expectEqual(document.cursor, document.anchor);
     try expectText(&document, bytes);
     try std.testing.expectEqual(@as(usize, 0), document.history_index);
+}
+
+test "typing coalesces into word-sized undo steps" {
+    var document = try Document.init(std.testing.allocator, "", null);
+    defer document.deinit();
+    for ("hello world") |c| try document.insert(&.{c});
+    try expectText(&document, "hello world");
+    try std.testing.expectEqual(@as(usize, 2), document.history.items.len);
+    try document.undo();
+    try expectText(&document, "hello ");
+    try document.undo();
+    try expectText(&document, "");
+    try document.redo();
+    try document.redo();
+    try expectText(&document, "hello world");
+    try std.testing.expectEqual(@as(usize, 11), document.cursor);
 }

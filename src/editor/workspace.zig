@@ -22,6 +22,18 @@ pub const Workspace = struct {
         self.files.deinit(self.allocator);
         self.allocator.free(self.root);
     }
+    /// Switches the project root and rescans it. Open documents stay open (absolute paths).
+    pub fn setRoot(self: *Workspace, root: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, root);
+        const previous = self.root;
+        self.root = owned;
+        self.scan() catch |err| {
+            self.root = previous;
+            self.allocator.free(owned);
+            return err;
+        };
+        self.allocator.free(previous);
+    }
     pub fn current(self: *Workspace) *Document {
         return &self.documents.items[self.active];
     }
@@ -52,7 +64,7 @@ pub const Workspace = struct {
         errdefer document.deinit();
         try self.documents.append(self.allocator, document);
         self.active = self.documents.items.len - 1;
-        log.info("opened {s}: {d} bytes, {d} lines, preview={}", .{ absolute, text.len, self.current().lines.items.len, self.current().preview_only });
+        log.info("opened {s}: {d} bytes, {d} lines, preview={}", .{ absolute, text.len, self.current().lineCount(), self.current().preview_only });
     }
     /// Capture this when deciding whether a Save As replacement is approved.
     /// The caller must pass the same expectation to saveWithExpectation after

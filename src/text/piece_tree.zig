@@ -299,6 +299,58 @@ pub const Tree = struct {
         self.root = root;
     }
 
+    /// Typing fast path: when `text` is inserted exactly where the most recently appended
+    /// add piece ends, append the bytes and lengthen that piece (path copy, no new node).
+    /// Returns false, without changing anything, when the fast path does not apply.
+    pub fn extendAt(self: *Tree, at: u64, text: []const u8) !bool {
+        if (text.len == 0 or at == 0 or at > self.len()) return false;
+        const loc = self.pieceAt(at - 1) orelse return false;
+        const piece = loc.piece;
+        if (piece.origin != .add or loc.start + piece.len != at) return false;
+        const end = piece.offset + piece.len;
+        if (end != self.store.add_len.load(.monotonic)) return false;
+        if (piece.len + text.len > max_piece) return false;
+        // The grown piece must stay inside one add block to remain directly addressable.
+        if (piece.offset / source.block_size != (end + text.len - 1) / source.block_size) return false;
+        const gpa = self.allocator();
+        var ranges: std.ArrayList(source.Range) = .empty;
+        defer ranges.deinit(gpa);
+        try self.store.append(text, &ranges, gpa);
+        std.debug.assert(ranges.items.len == 1 and ranges.items[0].offset == end);
+        const nl: u32 = @intCast(scan.countNewlines(text));
+        const root = try self.grow(self.root.?, at - 1, @intCast(text.len), nl);
+        release(gpa, self.root);
+        self.root = root;
+        return true;
+    }
+    /// Copies the path to the piece containing `off` and lengthens that piece.
+    fn grow(self: *Tree, n: *Node, off: u64, add: u32, nl: u32) !*Node {
+        const gpa = self.allocator();
+        const lb = bytesOf(n.left);
+        var piece = n.piece;
+        var left: ?*Node = null;
+        var right: ?*Node = null;
+        var left_new = false;
+        var right_new = false;
+        if (off < lb) {
+            left = try self.grow(n.left.?, off, add, nl);
+            left_new = true;
+        } else if (off >= lb + piece.len) {
+            right = try self.grow(n.right.?, off - lb - piece.len, add, nl);
+            right_new = true;
+        } else {
+            piece.len += add;
+            if (piece.nl != unknown_nl) piece.nl += nl;
+        }
+        errdefer if (left_new) release(gpa, left);
+        errdefer if (right_new) release(gpa, right);
+        const copy = try self.newNode(piece, n.priority, null, null);
+        copy.left = if (left_new) left else retain(n.left);
+        copy.right = if (right_new) right else retain(n.right);
+        copy.update();
+        return copy;
+    }
+
     pub const Located = struct { piece: Piece, start: u64 };
 
     /// The piece containing `offset` (offset < len), with its starting offset.
@@ -643,4 +695,29 @@ test "chunk and read bounds reject invalid ranges" {
     var out: [2]u8 = undefined;
     try testing.expectError(error.OutOfBounds, tree.read(&reader, 2, &out));
     try testing.expectError(error.OutOfBounds, tree.read(&reader, 4, out[0..0]));
+}
+
+test "typing grows the last add piece instead of fragmenting" {
+    var tree = try memoryTree("ab");
+    defer tree.deinitShared(undefined);
+    var reader = Reader.init(tree.store, undefined);
+    defer reader.deinit();
+    try tree.replace(&reader, 1, 1, "x");
+    var old = tree.share();
+    for ("yz\nw") |c| try testing.expect(try tree.extendAt(tree.len() - 1, &.{c}));
+    var pieces: std.ArrayList(Piece) = .empty;
+    defer pieces.deinit(testing.allocator);
+    try tree.collect(testing.allocator, &pieces);
+    try testing.expectEqual(@as(usize, 3), pieces.items.len);
+    var out: [7]u8 = undefined;
+    try tree.read(&reader, 0, &out);
+    try testing.expectEqualStrings("axyz\nwb", &out);
+    try testing.expectEqual(@as(u64, 2), tree.lineCount());
+    // The shared version is untouched by path copying.
+    var old_out: [3]u8 = undefined;
+    try old.read(&reader, 0, &old_out);
+    try testing.expectEqualStrings("axb", &old_out);
+    old.deinitShared(undefined);
+    // Not at the end of the newest add piece: fast path declines.
+    try testing.expect(!try tree.extendAt(1, "q"));
 }

@@ -7,7 +7,12 @@ const config = @import("../config.zig");
 const Rect = @import("../layout.zig").Rect;
 const syntax = zid.syntax;
 const max_line_bytes = 64 * 1024;
+const settings_dialog = @import("settings_dialog.zig");
 pub fn drawDialog(self: *App) !void {
+    if (self.dialog == .settings) {
+        try settings_dialog.drawSettings(self);
+        return;
+    }
     const t = self.settings.theme;
     try self.fill(.{ .w = self.layout.width, .h = self.layout.height }, .{ 0, 0, 0, 150 });
     const w = @min(700, self.layout.width - 40);
@@ -18,7 +23,7 @@ pub fn drawDialog(self: *App) !void {
         .save => "Save as — path relative to project",
         .close => "This document has unsaved changes",
         .quit => "There are unsaved documents",
-        .none => "",
+        .none, .settings => "",
     };
     try self.renderer.textUi(title, r.x + 18, r.y + 28, t.text);
     self.clip(.{ .x = r.x + 18, .y = r.y + 42, .w = w - 36, .h = 50 });
