@@ -9,8 +9,8 @@ pub const Workspace = struct {
     documents: std.ArrayList(Document) = .empty,
     files: std.ArrayList([]u8) = .empty,
     active: usize = 0,
-    /// Opening remains synchronous in this first slice. Bound memory until
-    /// background loading and a persistent text tree replace the gap buffer.
+    /// Opening remains synchronous and memory-backed in this slice. Bound memory
+    /// until the file-backed large-file reader is integrated.
     pub const max_file_bytes = 32 * 1024 * 1024;
     pub fn init(allocator: std.mem.Allocator, io: std.Io, root: []const u8) !Workspace {
         return .{ .allocator = allocator, .io = io, .root = try allocator.dupe(u8, root) };
@@ -55,12 +55,15 @@ pub const Workspace = struct {
             };
         }
         const before = Document.DiskIdentity.fromStat(try std.Io.Dir.cwd().statFile(self.io, absolute, .{}));
-        const text = try std.Io.Dir.cwd().readFileAlloc(self.io, absolute, self.allocator, .limited(max_file_bytes));
-        defer self.allocator.free(text);
-        const after = Document.DiskIdentity.fromStat(try std.Io.Dir.cwd().statFile(self.io, absolute, .{}));
-        if (!before.eql(after)) return error.ExternalFileChanged;
-        var document = try Document.init(self.allocator, text, absolute);
-        document.disk_identity = after;
+        const text = blk: {
+            const bytes = try std.Io.Dir.cwd().readFileAlloc(self.io, absolute, self.allocator, .limited(max_file_bytes));
+            errdefer self.allocator.free(bytes);
+            const after = Document.DiskIdentity.fromStat(try std.Io.Dir.cwd().statFile(self.io, absolute, .{}));
+            if (!before.eql(after)) return error.ExternalFileChanged;
+            break :blk bytes;
+        };
+        var document = try Document.initOwned(self.allocator, text, absolute);
+        document.disk_identity = before;
         errdefer document.deinit();
         try self.documents.append(self.allocator, document);
         self.active = self.documents.items.len - 1;

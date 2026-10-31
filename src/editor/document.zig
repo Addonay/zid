@@ -52,9 +52,17 @@ pub const Document = struct {
         typing: bool,
     };
     pub fn init(allocator: std.mem.Allocator, text: []const u8, path: ?[]const u8) !Document {
-        if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
-        if (std.mem.indexOfScalar(u8, text, 0) != null) return error.BinaryFile;
-        var self: Document = .{ .allocator = allocator, .buffer = try TextBuffer.init(allocator, text), .crlf = std.mem.indexOf(u8, text, "\r\n") != null };
+        try validateText(text);
+        return initOwned(allocator, try allocator.dupe(u8, text), path);
+    }
+    /// Consumes allocator-owned text on both success and failure. File loading can
+    /// hand its allocation directly to storage instead of retaining a second copy.
+    pub fn initOwned(allocator: std.mem.Allocator, text: []u8, path: ?[]const u8) !Document {
+        validateText(text) catch |err| {
+            allocator.free(text);
+            return err;
+        };
+        var self: Document = .{ .allocator = allocator, .buffer = try TextBuffer.initOwned(allocator, text), .crlf = std.mem.indexOf(u8, text, "\r\n") != null };
         errdefer self.deinit();
         if (path) |value| self.path = try allocator.dupeSentinel(u8, value, 0);
         var lines = std.mem.splitScalar(u8, text, '\n');
@@ -63,6 +71,10 @@ pub const Document = struct {
             break;
         };
         return self;
+    }
+    fn validateText(text: []const u8) !void {
+        if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
+        if (std.mem.indexOfScalar(u8, text, 0) != null) return error.BinaryFile;
     }
     pub fn deinit(self: *Document) void {
         for (self.history.items) |edit| self.freeEdit(edit);
@@ -291,6 +303,30 @@ test "UTF-8 deletion and CRLF indexing retain file bytes" {
 test "binary and malformed UTF-8 inputs are rejected" {
     try std.testing.expectError(error.BinaryFile, Document.init(std.testing.allocator, "a\x00b", null));
     try std.testing.expectError(error.InvalidUtf8, Document.init(std.testing.allocator, "\xff", null));
+}
+
+test "owned document initialization retains the original allocation" {
+    const bytes = try std.testing.allocator.dupe(u8, "one\r\ntwo");
+    var document = try Document.initOwned(std.testing.allocator, bytes, "file");
+    defer document.deinit();
+    try std.testing.expectEqual(bytes.ptr, document.buffer.tree.store.original.memory.ptr);
+    try std.testing.expect(document.crlf);
+    try expectText(&document, "one\r\ntwo");
+    try std.testing.expectEqual(@as(usize, 2), document.lineCount());
+    try document.insert("prefix");
+    try document.undo();
+    try expectText(&document, "one\r\ntwo");
+}
+
+fn ownedInitializationScenario(allocator: std.mem.Allocator) !void {
+    var document = try Document.initOwned(allocator, try allocator.dupe(u8, "hello\nworld"), "owned.txt");
+    defer document.deinit();
+}
+
+test "owned document initialization releases transferred text on allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, ownedInitializationScenario, .{});
+    try std.testing.expectError(error.InvalidUtf8, Document.initOwned(std.testing.allocator, try std.testing.allocator.dupe(u8, "\xff"), null));
+    try std.testing.expectError(error.BinaryFile, Document.initOwned(std.testing.allocator, try std.testing.allocator.dupe(u8, "a\x00b"), null));
 }
 
 test "CRLF navigation and deletion use whole newline boundaries" {
