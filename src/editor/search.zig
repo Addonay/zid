@@ -91,11 +91,14 @@ pub const SearchPlan = struct {
     pub fn enumerate(self: *const SearchPlan, buffer: *const TextBuffer, range: Range, cursor: ?usize, out: []usize) Enumeration {
         const at = cursor orelse return .{ .written = 0, .cursor = null };
         if (!range.valid(buffer.len()) or at < range.start or at > range.end) return .{ .written = 0, .cursor = null };
+        if (self.pattern.len > range.end - at) return .{ .written = 0, .cursor = null };
         if (out.len == 0) return .{ .written = 0, .cursor = at };
         var written: usize = 0;
         var search_at = at;
+        var scanner = Scanner{ .plan = self, .buffer = buffer, .start = at, .end = range.end, .offset = at };
         while (written < out.len) {
-            const found = self.next(buffer, range, search_at) orelse return .{ .written = written, .cursor = null };
+            const found = scanner.advance() orelse return .{ .written = written, .cursor = null };
+            if (!isBoundary(buffer, found) or !isBoundary(buffer, found + self.pattern.len)) continue;
             out[written] = found;
             written += 1;
             search_at = found + 1; // retain overlaps
@@ -184,6 +187,28 @@ test "empty pattern rejected and enumeration resumes with overlaps" {
     const c = plan.enumerate(&buffer, .{ .start = 0, .end = 5 }, b.cursor, &out);
     try testing.expectEqual(@as(usize, 0), c.written);
     try testing.expect(c.cursor == null);
+}
+
+test "dense overlapping batches preserve scanner state across text windows" {
+    const bytes = try testing.allocator.alloc(u8, window_size * 3);
+    defer testing.allocator.free(bytes);
+    @memset(bytes, 'a');
+    var buffer = try TextBuffer.init(testing.allocator, bytes);
+    defer buffer.deinit();
+    var plan = try SearchPlan.init(testing.allocator, bytes[0..3000], false);
+    defer plan.deinit();
+    var out: [5000]usize = undefined;
+    var cursor: ?usize = 0;
+    var expected: usize = 0;
+    while (cursor != null) {
+        const batch = plan.enumerate(&buffer, .{ .start = 0, .end = bytes.len }, cursor, &out);
+        for (out[0..batch.written]) |found| {
+            try testing.expectEqual(expected, found);
+            expected += 1;
+        }
+        cursor = batch.cursor;
+    }
+    try testing.expectEqual(bytes.len - 3000 + 1, expected);
 }
 
 test "search crosses fixed windows and piece boundaries" {
