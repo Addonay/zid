@@ -68,3 +68,9 @@ The default Linux keymap in `.ref/zed/assets/keymaps/default-linux.json` maps
 Shift+arrows, Shift+Home/End, Ctrl+Shift+Home/End and Select All to editor
 selection actions. Zid uses those actions for large files with byte endpoints;
 line boundaries are resolved asynchronously and do not implement Zed smart Home.
+
+Zed's `crates/editor/src/element.rs` builds selection background segments per
+visible display row. The large-file viewer similarly paints per-row backgrounds
+behind text, but maps byte selections through its bounded decoder instead of
+implementing Zed's display map. Partial encoded characters select the complete
+displayed replacement or character; a selected line ending gets a small marker.
