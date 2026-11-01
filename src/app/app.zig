@@ -223,7 +223,10 @@ pub const App = struct {
         while (self.running) {
             const now = sdl.timer.getMillisecondsSinceInit();
             const blink = self.focused and self.settings.cursor_blink and self.dialog == .none and !self.panel_focus;
-            const indexing = if (self.workspace.current().large) |*l| !l.file.complete() and l.failure == null else false;
+            const indexing = if (self.workspace.current().large) |*l| blk: {
+                const state = l.poll(&.{});
+                break :blk l.needs_redraw or ((state.loading or !state.complete) and l.failure == null);
+            } else false;
             const wait: u31 = if (indexing) 16 else if (blink) @intCast(500 - @min(500, now - self.last_blink)) else 1000;
             var dirty = false;
             if (sdl.events.waitAndPopTimeout(wait)) |pending_event| {
@@ -236,13 +239,8 @@ pub const App = struct {
                 }
             }
             if (self.workspace.current().large) |*large| {
-                if (!large.file.complete() and large.failure == null) {
-                    _ = large.file.indexStep(large.io, 64 * 1024) catch |err| blk: {
-                        large.failure = err;
-                        break :blk 0;
-                    };
-                    dirty = true;
-                }
+                _ = large.poll(&.{});
+                if (indexing) dirty = true;
             }
             if (sdl.timer.getMillisecondsSinceInit() - self.last_config_poll >= 1000) {
                 self.last_config_poll = sdl.timer.getMillisecondsSinceInit();
@@ -331,19 +329,13 @@ pub const App = struct {
                     const input = std.mem.trim(u8, g.input.text(), " ");
                     if (std.mem.endsWith(u8, input, "%")) {
                         const percent = std.fmt.parseInt(u64, input[0 .. input.len - 1], 10) catch return;
-                        if (percent <= 100) large.offset = (large.file.size() / 100) * percent + (large.file.size() % 100) * percent / 100;
+                        if (percent <= 100) doc.largeNavigate((large.size / 100) * percent + (large.size % 100) * percent / 100);
                     } else if (std.mem.startsWith(u8, input, "b")) {
                         const offset = std.fmt.parseInt(u64, input[1..], 10) catch return;
-                        large.offset = @min(offset, large.file.size());
+                        doc.largeNavigate(offset);
                     } else {
                         const line = std.fmt.parseInt(u64, input, 10) catch return;
-                        large.offset = large.file.lineStart(large.io, line -| 1) catch |err| {
-                            switch (err) {
-                                error.IndexIncomplete, error.LineOutOfRange => {},
-                                else => large.failure = err,
-                            }
-                            return;
-                        };
+                        large.requestLine(line -| 1);
                     }
                     return;
                 }
@@ -379,7 +371,7 @@ pub const App = struct {
                 if (c == .@"menu::Cancel") {
                     doc.setSelection(g.restore_anchor, g.restore_cursor);
                     doc.scroll_line = g.restore_scroll;
-                    if (doc.large) |*large| large.offset = g.restore_large_offset;
+                    if (doc.large != null) doc.largeNavigate(g.restore_large_offset);
                 } else if (pickers.goToLineTarget(doc, g.input.text())) |offset| {
                     doc.move(offset, false);
                     try self.revealCursor();
@@ -780,7 +772,7 @@ pub const App = struct {
         const lang = syntax.Language.fromPath(doc.path orelse "");
         var info: [256]u8 = undefined;
         const row = doc.lineOf(doc.cursor);
-        const text = if (doc.large) |large| try std.fmt.bufPrint(&info, "Byte {d} / {d}", .{ large.offset, large.file.size() }) else try std.fmt.bufPrint(&info, "{d}:{d}    {s}    UTF-8    {s}    Spaces: {d}", .{ row + 1, doc.cursor - doc.lineStart(row) + 1, if (doc.crlf) @as([]const u8, "CRLF") else "LF", lang.displayName(), self.settings.tab_size });
+        const text = if (doc.large) |large| try std.fmt.bufPrint(&info, "Byte {d} / {d}", .{ large.offset, large.size }) else try std.fmt.bufPrint(&info, "{d}:{d}    {s}    UTF-8    {s}    Spaces: {d}", .{ row + 1, doc.cursor - doc.lineStart(row) + 1, if (doc.crlf) @as([]const u8, "CRLF") else "LF", lang.displayName(), self.settings.tab_size });
         try self.renderer.textUi(text, @max(52, status.w - self.renderer.widthUi(text) - 40), status.y + 18, t.text);
         try modals.drawModal(self);
         if (self.dialog != .none) try self.drawDialog();

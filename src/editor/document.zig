@@ -22,7 +22,45 @@ pub const Document = struct {
     disk_identity: ?DiskIdentity = null,
     large: ?LargeState = null,
 
-    pub const LargeState = struct { file: @import("../text/large_file.zig").LargeFile, io: std.Io, offset: u64 = 0, failure: ?anyerror = null };
+    pub const LargeState = struct {
+        worker: *@import("../text/large_worker.zig").Worker,
+        size: u64,
+        offset: u64 = 0,
+        failure: ?anyerror = null,
+        requested_offset: ?u64 = null,
+        generation: u64 = 0,
+        line_pending: bool = false,
+        needs_redraw: bool = true,
+        last_indexed: u64 = 0,
+        last_loading: bool = true,
+        last_line: ?u64 = null,
+
+        pub fn poll(self: *LargeState, out: []u8) @import("../text/large_worker.zig").Snapshot {
+            if (!self.line_pending and self.requested_offset != self.offset) {
+                self.generation = self.worker.requestWindow(self.offset);
+                self.requested_offset = self.offset;
+            }
+            const snapshot = self.worker.snapshot(out);
+            const failure: ?anyerror = snapshot.index_error orelse snapshot.request_error;
+            if (snapshot.indexed_bytes != self.last_indexed or snapshot.loading != self.last_loading or snapshot.first_line != self.last_line or failure != self.failure) self.needs_redraw = true;
+            self.last_indexed = snapshot.indexed_bytes;
+            self.last_loading = snapshot.loading;
+            self.last_line = snapshot.first_line;
+            self.failure = failure;
+            if (!snapshot.loading and snapshot.generation == self.generation) {
+                if (snapshot.request_error == null) {
+                    self.offset = snapshot.offset;
+                    self.requested_offset = snapshot.offset;
+                }
+                self.line_pending = false;
+            }
+            return snapshot;
+        }
+        pub fn requestLine(self: *LargeState, line: u64) void {
+            self.generation = self.worker.requestLine(line);
+            self.line_pending = true;
+        }
+    };
 
     pub const max_line_bytes = 64 * 1024;
     /// Bounds retained undo versions, not total text storage: the append-only add
@@ -76,22 +114,26 @@ pub const Document = struct {
         return self;
     }
     pub fn initLarge(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Document {
-        var file = try @import("../text/large_file.zig").LargeFile.open(allocator, io, std.Io.Dir.cwd(), path);
-        errdefer file.deinit(io);
+        const worker = try @import("../text/large_worker.zig").Worker.create(allocator, io, path);
+        errdefer worker.destroy();
         var self = try init(allocator, "", path);
-        self.large = .{ .file = file, .io = io };
+        self.large = .{ .worker = worker, .size = worker.snapshot(&.{}).file_size };
+        _ = self.large.?.poll(&.{});
         self.preview_only = true;
         return self;
     }
     pub fn largeNavigate(self: *Document, offset: u64) void {
-        if (self.large) |*large| large.offset = @min(offset, large.file.size());
+        if (self.large) |*large| {
+            large.offset = @min(offset, large.size);
+            large.line_pending = false;
+        }
     }
     fn validateText(text: []const u8) !void {
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
         if (std.mem.indexOfScalar(u8, text, 0) != null) return error.BinaryFile;
     }
     pub fn deinit(self: *Document) void {
-        if (self.large) |*large| large.file.deinit(large.io);
+        if (self.large) |*large| large.worker.destroy();
         for (self.history.items) |edit| self.freeEdit(edit);
         self.history.deinit(self.allocator);
         if (self.path) |path| self.allocator.free(path);

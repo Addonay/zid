@@ -477,15 +477,19 @@ test "large files open bounded read only, navigate, index and close" {
     try std.testing.expectError(error.ReadOnlyLargeFile, workspace.save("other"));
     doc.largeNavigate(end);
     var window: [4]u8 = undefined;
-    try std.testing.expectEqual(@as(usize, 4), try doc.large.?.file.readWindow(io, doc.large.?.offset, &window));
+    _ = doc.large.?.poll(&.{});
+    doc.large.?.worker.waitForRequest(doc.large.?.generation);
+    const snapshot = doc.large.?.poll(&window);
+    try std.testing.expectEqual(@as(usize, 4), snapshot.len);
     try std.testing.expectEqualStrings("end\n", &window);
-    _ = try doc.large.?.file.indexStep(io, 65536);
-    try std.testing.expectEqual(@as(u64, 65536), doc.large.?.file.indexedBytes());
     const changed = try tmp.dir.openFile(io, "huge", .{ .mode = .write_only });
     try changed.setLength(io, 1);
     changed.close(io);
-    try std.testing.expectError(error.FileChanged, doc.large.?.file.readWindow(io, 0, &window));
-    try std.testing.expectError(error.FileChanged, doc.large.?.file.readWindow(io, 0, &window));
+    doc.largeNavigate(0);
+    _ = doc.large.?.poll(&.{});
+    doc.large.?.worker.waitForRequest(doc.large.?.generation);
+    _ = doc.large.?.poll(&window);
+    try std.testing.expectEqual(error.FileChanged, doc.large.?.failure.?);
     try workspace.closeActive();
     try std.testing.expect(workspace.current().large == null);
 }

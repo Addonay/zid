@@ -227,7 +227,7 @@ Hot paths log timings at debug level (startup phases, file open, index, first pa
 ## Current integration boundary
 
 See README.md for implemented M1 behavior and current limits. The running Document
-uses the piece treap through `editor/text_buffer.zig` for memory-backed originals. A separate read-only large-file byte viewer uses positional reads and incrementally indexes on the main thread; worker-backed indexing and the full line-oriented viewer remain unfinished. See STRUCTURE.md for the actual presentation-layer split and planned
+uses the piece treap through `editor/text_buffer.zig` for memory-backed originals. A separate read-only large-file byte viewer uses positional reads and indexes and reads on a heap-owned background worker, publishing bounded snapshots by request generation. Full line-oriented navigation, selection and copy remain unfinished; close currently joins the worker and may wait for filesystem I/O. See STRUCTURE.md for the actual presentation-layer split and planned
 feature boundaries. AI remains deferred.
 
 Reference-led decisions and inspected source areas are recorded in REFERENCE_NOTES.md.

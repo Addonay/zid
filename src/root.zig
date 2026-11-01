@@ -22,7 +22,9 @@ test {
 /// Read-only positional access and incremental indexing for large files.
 pub const large_file = @import("text/large_file.zig");
 pub const large_display = @import("text/large_display.zig");
+pub const large_worker = @import("text/large_worker.zig");
 test {
     _ = large_file;
     _ = large_display;
+    _ = large_worker;
 }

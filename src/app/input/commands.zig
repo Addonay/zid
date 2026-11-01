@@ -277,7 +277,7 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
             else => 0,
         };
         if (step == 0 and back == 0) return error.UnsupportedLargeFileCommand;
-        l.offset = @min(l.file.size(), (l.offset -| back) +| step);
+        l.offset = @min(l.size, (l.offset -| back) +| step);
         return;
     }
     if (doc.large != null and c == .@"workspace::SaveAs") return error.ReadOnlyLargeFile;
