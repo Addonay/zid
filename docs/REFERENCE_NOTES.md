@@ -205,3 +205,19 @@ Reference screenshots of the Zed build were taken under Xvfb (`ZED_STATELESS=1`,
 | `crates/editor` render path | Per-visible-line span queries against the parsed tree, reparsed on edits | `App.treeSitterLayer` re-parses the whole buffer when `doc.revision` changes; `editor.zig` asks `Layer.spansForRange` per row and falls back to `lexLine` when `grammarOf` returns null or the buffer is `doc.large`. |
 
 Note: query cursors iterate lazily — an injection pass must gather all matches before parsing any region, or parsing mid-iteration invalidates the walk and later patterns silently never match.
+
+### Settings window parity (2026-11-02)
+
+Zed's `crates/settings_ui/src/settings_ui.rs` renders the settings window as a 226px nav sidebar plus a page column with a file-scope header, optional warning banners, and sectioned items. zid keeps its in-app dialog but matches the window's structure and contract:
+
+| Reference source | Observation | Zid decision |
+| --- | --- | --- |
+| `render_files_header` | Left: accent-tinted file-scope buttons; right: "Edit in settings.json" | The dialog draws the same header row ("User" scope button + edit button) above the scroll region; project-scope and "+N" file menus are omitted since zid only has user settings.json. |
+| Warning `Banner` | Parse failure shows "Failed to load your settings..." + a fix button | `settings_document_error` flag on `Document.load` failure draws the same banner with the same copy and a "Fix in settings.json" action. |
+| `render_settings_item_layout` | Undo icon resets a setting; hover link icon copies `zed://settings/<path>`; code spans render in buffer font | Same: `ui:undo` icon beside the title when a value differs from default, hover-only `ui:link` icon left of the row copying `zid://settings/<path>` (green check feedback), backtick code spans rendered via `textMonoXSmall`. |
+| Navigation menu | TreeView roots expand/collapse per page; nav is keyboard-focusable; PageUp/Down jump roots; scrolling highlights the active section | `settings_expanded` bitmask per page; new `.nav` focus state with up/down/tab/home/end navigation, right=expand, left=collapse-or-focus-content, enter=open; `activeSection` highlights the scrolled-into section. |
+| Footer `KeybindingHint` | "Focus Navbar"/"Focus Content" with the ToggleFocusNav binding | Sidebar footer shows the `left` hint plus the focus-dependent label. |
+| `SettingsWindow` keymap | Ctrl+F search, Ctrl+, open settings.json, left/Ctrl+Shift+E ToggleFocusNav, Esc closes | Same bindings; Esc now always closes the dialog. NumberField up/down stepping while editing matches `MoveUp`/`MoveDown`. |
+| `render_no_results` | Centered "No Results" + `No settings match "q"` | Identical centered layout and copy. |
+
+Not carried over (no zid counterpart): project-scope files and the `+N` file menu, "Modified in {file}" labels, sub-pages/breadcrumbs (LLM providers, MCP servers, audio), FocusFile `ctrl-N`, and migration banners.

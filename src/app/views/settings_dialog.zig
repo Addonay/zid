@@ -23,9 +23,7 @@ const Id = helpers.Id;
 const Item = struct { id: Id, page: Page, section: []const u8, title: []const u8, desc: []const u8, kind: Kind, button: []const u8 = "", path: []const []const u8 = &.{}, jsonpath: []const u8 = "", default: []const u8 = "null" };
 
 const primary_items = [_]Item{
-    .{ .id = .open_file, .page = .general, .section = "Configuration", .title = "Settings File", .desc = "Open settings.json in an editor tab", .kind = .button, .button = "Edit in settings.json" },
-    .{ .id = .reload, .page = .general, .section = "Configuration", .title = "Reload Configuration", .desc = "Re-read settings.json and keymap.json from disk", .kind = .button, .button = "Reload" },
-    .{ .id = .open_keymap, .page = .keymap, .section = "Keybindings", .title = "Keymap Editor", .desc = "Browse and search every keybinding (Zed default keymap plus keymap.json)", .kind = .button, .button = "Open Keymap" },
+    .{ .id = .open_keymap, .page = .keymap, .section = "Keybindings", .title = "Edit Keybindings", .desc = "Customize keybindings in the keymap editor.", .kind = .button, .button = "Open Keymap" },
     .{ .id = .open_keymap_file, .page = .keymap, .section = "Keybindings", .title = "Keymap File", .desc = "Edit keymap.json (Zed format; later entries override defaults)", .kind = .button, .button = "Edit keymap.json" },
 };
 
@@ -67,6 +65,9 @@ const nav_row_h: f32 = 26;
 const nav_footer_h: f32 = 32;
 const content_pad_x: f32 = 32;
 const content_pad_top: f32 = 20;
+const page_header_h: f32 = 52;
+const banner_h: f32 = 60;
+const header_button_h: f32 = 26;
 const title_h: f32 = 44;
 const header_h: f32 = 40;
 const item_h: f32 = 60;
@@ -99,11 +100,18 @@ pub fn open(self: *App) void {
     self.settings_scroll = 0;
     self.settings_dropdown = false;
     self.settings_focus = .search;
+    self.settings_nav_index = 0;
+    self.settings_expanded = @as(u32, 1) << @intCast(self.settings_category);
+    self.settings_copied = null;
+    self.settings_document_error = false;
     self.settings_editing_number = false;
     self.settings_editing_json = false;
     self.settings_nav_scroll = 0;
     if (self.settings_document) |*document| document.deinit();
-    self.settings_document = @import("../settings_document.zig").Document.load(self.gpa, self.io, self.config_root) catch null;
+    self.settings_document = @import("../settings_document.zig").Document.load(self.gpa, self.io, self.config_root) catch |err| blk: {
+        if (err != error.FileNotFound) self.settings_document_error = true;
+        break :blk null;
+    };
 }
 
 fn query(self: *App) []const u8 {
@@ -183,6 +191,22 @@ pub fn dialogRect(self: *App) Rect {
 fn contentRect(r: Rect) Rect {
     return .{ .x = r.x + sidebar_w, .y = r.y + 1, .w = r.w - sidebar_w - 1, .h = r.h - 2 };
 }
+/// Scrollable region under the file-scope header and optional warning banner.
+fn scrollRect(self: *App, r: Rect) Rect {
+    const c = contentRect(r);
+    const top = pageHeaderH(self);
+    return .{ .x = c.x, .y = c.y + top, .w = c.w, .h = c.h - top };
+}
+fn pageHeaderH(self: *App) f32 {
+    return page_header_h + if (self.settings_document_error) banner_h else 0;
+}
+fn expanded(self: *App, page: Page) bool {
+    return self.settings_expanded & (@as(u32, 1) << @intCast(@backingInt(page))) != 0;
+}
+fn setExpanded(self: *App, page: Page, on: bool) void {
+    const bit = @as(u32, 1) << @intCast(@backingInt(page));
+    if (on) self.settings_expanded |= bit else self.settings_expanded &= ~bit;
+}
 fn searchRect(r: Rect) Rect {
     return .{ .x = r.x + sidebar_pad, .y = r.y + sidebar_pad, .w = sidebar_w - 2 * sidebar_pad, .h = search_h };
 }
@@ -190,7 +214,8 @@ fn closeRect(r: Rect) Rect {
     return .{ .x = r.x + r.w - 34, .y = r.y + 10, .w = 24, .h = 24 };
 }
 fn rowRect(self: *App, c: Rect, row: Row) Rect {
-    return .{ .x = c.x + content_pad_x, .y = c.y + content_pad_top + row.y - self.settings_scroll, .w = c.w - 2 * content_pad_x, .h = row.h };
+    const s = scrollRect(self, dialogRect(self));
+    return .{ .x = c.x + content_pad_x, .y = s.y + content_pad_top + row.y - self.settings_scroll, .w = c.w - 2 * content_pad_x, .h = row.h };
 }
 fn controlWidth(self: *App, item: Item) f32 {
     return switch (item.kind) {
@@ -237,7 +262,7 @@ fn navEntries(self: *App, r: Rect, buf: *[max_nav]NavEntry) []NavEntry {
         buf[n] = .{ .page = page, .section = null, .rect = .{ .x = x, .y = y, .w = w, .h = nav_row_h } };
         n += 1;
         y += nav_row_h;
-        if (page != currentPage(self) or query(self).len > 0) continue;
+        if (!expanded(self, page) and query(self).len == 0) continue;
         var last: []const u8 = "";
         for (items) |item| if (item.page == page and !std.mem.eql(u8, last, item.section)) {
             last = item.section;
@@ -407,18 +432,20 @@ pub fn drawSettings(self: *App) !void {
     try drawNav(self, r, &lay);
     const foot_y = r.y + r.h - nav_footer_h;
     try self.renderer.rect(r.x + 1, foot_y, sidebar_w - 1, 1, t.border_variant);
-    try keyHint(self, r.x + sidebar_pad, foot_y + 7, "Del", "Reset focused setting");
+    try keyHint(self, r.x + sidebar_pad, foot_y + 7, "left", if (self.settings_focus == .nav) "Focus Content" else "Focus Navbar");
 
-    // Content.
+    // Content: file-scope header, optional warning banner, then the page rows.
     const c = contentRect(r);
-    self.clip(c);
+    try drawHeader(self, c);
+    const s = scrollRect(self, r);
+    self.clip(s);
     for (lay.slice(), 0..) |row, ri| {
         const rr = rowRect(self, c, row);
-        if (rr.y + rr.h < c.y or rr.y > c.y + c.h) continue;
+        if (rr.y + rr.h < s.y or rr.y > s.y + s.h) continue;
         switch (row.kind) {
             .title => |page| try self.renderer.textUi(page_titles[@backingInt(page)], rr.x, rr.y + 28, t.text),
             .header => |name| {
-                try self.renderer.textSmall(name, rr.x, rr.y + 26, t.muted);
+                try self.renderer.textMonoXSmall(name, rr.x, rr.y + 26, t.muted);
                 try self.renderer.rect(rr.x, rr.y + rr.h - 6, rr.w, 1, t.border_variant);
             },
             .item => |index| {
@@ -427,8 +454,14 @@ pub fn drawSettings(self: *App) !void {
             },
         }
     }
-    if (lay.len == 0) try self.renderer.textUi("No matching settings", c.x + content_pad_x, c.y + content_pad_top + 28, t.muted);
-    try drawContentScrollbar(self, c, &lay);
+    if (lay.len == 0) {
+        const msg = "No Results";
+        try self.renderer.textUi(msg, s.x + (s.w - self.renderer.widthUi(msg)) / 2, s.y + s.h / 2 - 8, t.text);
+        var detail_buf: [96]u8 = undefined;
+        const detail = std.fmt.bufPrint(&detail_buf, "No settings match \"{s}\"", .{query(self)}) catch "No settings match";
+        try self.renderer.textSmall(detail, s.x + (s.w - self.renderer.widthSmall(detail)) / 2, s.y + s.h / 2 + 10, t.muted);
+    }
+    try drawContentScrollbar(self, s, &lay);
     self.renderer.setClip(null);
 
     // Close button.
@@ -442,6 +475,49 @@ pub fn drawSettings(self: *App) !void {
     };
 }
 
+/// Zed's render_files_header: file-scope buttons on the left and an
+/// "Edit in settings.json" button on the right. zid has a single (User)
+/// settings file, so only the User scope is shown.
+fn drawHeader(self: *App, c: Rect) !void {
+    const t = self.settings.theme;
+    const by = c.y + 20;
+    const label = "User";
+    const bw = self.renderer.widthUi(label) + 24;
+    // Selected scope button: Tinted(Accent) — translucent accent on accent text.
+    try self.renderer.roundRect(c.x + content_pad_x, by, bw, header_button_h, radius, .{ t.accent[0], t.accent[1], t.accent[2], 40 });
+    try self.renderer.textUi(label, c.x + content_pad_x + 12, by + 18, t.accent);
+    if (self.settings_document_error) try drawBanner(self, c, by + header_button_h + 8);
+    const edit = "Edit in settings.json";
+    const er = editFileRect(self, c);
+    const fill = if (hovered(self, er)) t.element_hover else t.element_background;
+    try self.renderer.roundBox(er.x, by, er.w, header_button_h, radius, fill, t.border);
+    try self.renderer.textUi(edit, er.x + 12, by + 18, t.text);
+}
+fn editFileRect(self: *App, c: Rect) Rect {
+    const w = self.renderer.widthUi("Edit in settings.json") + 24;
+    return .{ .x = c.x + c.w - content_pad_x - w, .y = c.y + 20, .w = w, .h = header_button_h };
+}
+fn bannerRect(c: Rect) Rect {
+    return .{ .x = c.x + content_pad_x, .y = c.y + 20 + header_button_h + 8, .w = c.w - 2 * content_pad_x, .h = banner_h - 16 };
+}
+/// Warning banner shown when settings.json fails to parse (Zed's Banner).
+fn drawBanner(self: *App, c: Rect, y: f32) !void {
+    const t = self.settings.theme;
+    const b: Rect = .{ .x = c.x + content_pad_x, .y = y, .w = c.w - 2 * content_pad_x, .h = banner_h - 16 };
+    try self.renderer.roundBox(b.x, b.y, b.w, b.h, radius, t.elevated_surface, t.warning);
+    try self.renderer.textUi("Failed to load your settings.", b.x + 14, b.y + 18, t.text);
+    try self.renderer.textSmall("Some values may be incorrect and changes may be lost.", b.x + 14, b.y + 34, t.muted);
+    const fix = "Fix in settings.json";
+    const fw = self.renderer.widthUi(fix) + 24;
+    const fr: Rect = .{ .x = b.x + b.w - fw - 12, .y = b.y + (b.h - header_button_h) / 2, .w = fw, .h = header_button_h };
+    const fill = if (hovered(self, fr)) t.element_hover else t.element_background;
+    try self.renderer.roundBox(fr.x, fr.y, fr.w, fr.h, radius, fill, t.border);
+    try self.renderer.textUi(fix, fr.x + 12, fr.y + 18, t.text);
+}
+
+fn clearQueryRect(s: Rect) Rect {
+    return .{ .x = s.x + s.w - 24, .y = s.y + 5, .w = 18, .h = 18 };
+}
 fn drawSearch(self: *App, r: Rect) !void {
     const t = self.settings.theme;
     const s = searchRect(r);
@@ -453,6 +529,9 @@ fn drawSearch(self: *App, r: Rect) !void {
         try self.renderer.textUi("Search settings…", tx, s.y + 19, t.placeholder);
     } else {
         try self.renderer.textUi(q, tx, s.y + 19, t.text);
+        const cr = clearQueryRect(s);
+        if (hovered(self, cr)) try self.renderer.roundRect(cr.x, cr.y, cr.w, cr.h, 3, t.ghost_element_hover);
+        try self.renderer.icon(icons.svg("ui:close"), cr.x + 2, cr.y + 2, 14, t.muted);
     }
     const caret_x = if (q.len == 0) tx - 2 else tx + self.renderer.widthUi(q) + 1;
     if (self.settings_focus == .search and self.caret_visible) try self.renderer.rect(caret_x, s.y + 6, 1, s.h - 12, t.accent);
@@ -464,25 +543,41 @@ fn drawNav(self: *App, r: Rect, lay: *const Layout) !void {
     const searching = query(self).len > 0;
     self.clip(.{ .x = r.x, .y = searchRect(r).y + search_h + 8, .w = sidebar_w, .h = r.h - search_h - nav_footer_h - 28 });
     defer self.renderer.setClip(null);
-    for (navEntries(self, r, &buf)) |entry| {
+    const active = activeSection(self, lay);
+    for (navEntries(self, r, &buf), 0..) |entry, ei| {
         const is_page = entry.section == null;
-        const selected = is_page and entry.page == currentPage(self) and !searching;
+        const selected = !searching and entry.page == currentPage(self) and
+            (is_page or (active != null and entry.section != null and std.mem.eql(u8, entry.section.?, active.?)));
+        const nav_focused = self.settings_focus == .nav and ei == self.settings_nav_index;
         const dimmed = searching and !pageHasMatches(lay, entry.page);
-        if (selected) {
+        if (selected or nav_focused) {
             try self.renderer.roundRect(entry.rect.x, entry.rect.y, entry.rect.w, entry.rect.h, radius, t.ghost_element_selected);
         } else if (hovered(self, entry.rect)) {
             try self.renderer.roundRect(entry.rect.x, entry.rect.y, entry.rect.w, entry.rect.h, radius, t.ghost_element_hover);
         }
+        if (nav_focused) try self.renderer.roundBox(entry.rect.x, entry.rect.y, entry.rect.w, entry.rect.h, radius, .{ 0, 0, 0, 0 }, t.border_focused);
         const color = if (dimmed) t.placeholder else if (is_page) t.text else t.muted;
         if (is_page) {
-            const expanded = entry.page == currentPage(self) and !searching;
-            const chevron = if (expanded) "ui:chevron_down" else "ui:chevron_right";
+            const is_open = expanded(self, entry.page) or searching;
+            const chevron = if (is_open) "ui:chevron_down" else "ui:chevron_right";
             try self.renderer.icon(icons.svg(chevron), entry.rect.x + 4, entry.rect.y + 6, 14, t.muted);
             try self.renderer.textUi(page_titles[@backingInt(entry.page)], entry.rect.x + 24, entry.rect.y + 18, color);
         } else {
             try self.renderer.textUi(entry.section.?, entry.rect.x + 24 + 16, entry.rect.y + 18, color);
         }
     }
+}
+
+/// Section scrolled into view on the current page — mirrors Zed's
+/// update_navbar_entry_from_scroll_position.
+fn activeSection(self: *App, lay: *const Layout) ?[]const u8 {
+    if (query(self).len > 0) return null;
+    var section: ?[]const u8 = null;
+    for (lay.slice()) |row| {
+        if (row.y - self.settings_scroll > content_pad_top + 4) break;
+        if (row.kind == .header) section = row.kind.header;
+    }
+    return section;
 }
 
 fn pageHasMatches(lay: *const Layout, page: Page) bool {
@@ -502,7 +597,11 @@ fn keyHint(self: *App, x: f32, y: f32, key: []const u8, label: []const u8) !void
 }
 
 fn resetRect(self: *App, item: Item, rr: Rect) Rect {
-    return .{ .x = rr.x + self.renderer.widthUi(item.title) + 8, .y = rr.y + 8, .w = 44, .h = 22 };
+    return .{ .x = rr.x + self.renderer.widthUi(item.title) + 8, .y = rr.y + 9, .w = 18, .h = 18 };
+}
+/// Hover-only link icon left of the row (Zed's render_settings_item_link).
+fn linkRect(rr: Rect) Rect {
+    return .{ .x = rr.x - 24, .y = rr.y + 9, .w = 18, .h = 18 };
 }
 fn resetValue(self: *App, id: Id) !void {
     if (!helpers.changed(self.settings, id)) return;
@@ -518,7 +617,7 @@ fn resetValue(self: *App, id: Id) !void {
 }
 
 fn clipContent(self: *App, r: Rect) void {
-    const c = contentRect(dialogRect(self));
+    const c = scrollRect(self, dialogRect(self));
     const x = @max(c.x, r.x);
     const y = @max(c.y, r.y);
     self.clip(.{ .x = x, .y = y, .w = @max(0, @min(c.x + c.w, r.x + r.w) - x), .h = @max(0, @min(c.y + c.h, r.y + r.h) - y) });
@@ -531,20 +630,50 @@ fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !v
     const stacked = rr.w < ctrl.w + 180;
     const desc_width = if (stacked) rr.w else @max(1, ctrl.x - rr.x - 12);
     clipContent(self, .{ .x = rr.x, .y = rr.y, .w = @max(0, desc_width), .h = rr.h });
+    // Link icon appears on row hover; becomes a green check once copied.
+    const link = linkRect(rr);
+    if (item.jsonpath.len > 0 and (rr.contains(self.mouse_x, self.mouse_y) or focused or self.settings_copied == index)) {
+        if (self.settings_copied == index) {
+            try self.renderer.icon(icons.svg("ui:check"), link.x + 1, link.y + 1, 16, .{ 126, 209, 140, 255 });
+        } else {
+            if (hovered(self, link)) try self.renderer.roundRect(link.x, link.y, link.w, link.h, 3, t.ghost_element_hover);
+            try self.renderer.icon(icons.svg("ui:link"), link.x + 1, link.y + 1, 16, t.muted);
+        }
+    }
     try self.renderer.textUi(item.title, rr.x, rr.y + 26, t.text);
     var rest = if (item.desc.len > 0) item.desc else item.jsonpath;
     var baseline = rr.y + 44;
+    var code = false;
     while (rest.len > 0) {
         const end = helpers.lineEnd(rest, desc_width, self, measureSmall);
-        try self.renderer.textSmall(rest[0..end], rr.x, baseline, t.muted);
+        // Backtick code spans render in the buffer font (Zed's render_code_spans).
+        var seg = rest[0..end];
+        var x = rr.x;
+        while (seg.len > 0) {
+            const tick = std.mem.indexOfScalar(u8, seg, '`') orelse seg.len;
+            const part = seg[0..tick];
+            if (part.len > 0) {
+                if (code) {
+                    try self.renderer.textMonoXSmall(part, x, baseline, t.text);
+                    x += self.renderer.widthMonoXSmall(part);
+                } else {
+                    try self.renderer.textSmall(part, x, baseline, t.muted);
+                    x += self.renderer.widthSmall(part);
+                }
+            }
+            if (tick < seg.len) {
+                code = !code;
+                seg = seg[tick + 1 ..];
+            } else break;
+        }
         rest = std.mem.trimStart(u8, rest[end..], " ");
         baseline += 16;
     }
-    self.clip(contentRect(dialogRect(self)));
+    self.clip(scrollRect(self, dialogRect(self)));
     if (helpers.changed(self.settings, item.id) or (item.kind == .value and self.settings_document != null and self.settings_document.?.get(item.path) != null)) {
         const reset = resetRect(self, item, rr);
-        if (hovered(self, reset)) try self.renderer.roundRect(reset.x, reset.y, reset.w, reset.h, radius, t.element_hover);
-        try self.renderer.textSmall("Reset", reset.x + 3, reset.y + 15, t.accent);
+        if (hovered(self, reset)) try self.renderer.roundRect(reset.x, reset.y, reset.w, reset.h, 3, t.element_hover);
+        try self.renderer.icon(icons.svg("ui:undo"), reset.x + 1, reset.y + 1, 16, if (hovered(self, reset)) t.text else t.accent);
     }
     if (divider) try self.renderer.rect(rr.x, rr.y + rr.h - 1, rr.w, 1, t.border_variant);
 
@@ -562,7 +691,7 @@ fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !v
             clipContent(self, .{ .x = ctrl.x + 8, .y = ctrl.y, .w = ctrl.w - 16, .h = ctrl.h });
             const text = if (focused and self.settings_editing_json) self.settings_number[0..self.settings_number_len] else valueText(self, item);
             try self.renderer.textSmall(text, ctrl.x + 8, ctrl.y + 18, t.text);
-            self.clip(contentRect(dialogRect(self)));
+            self.clip(scrollRect(self, dialogRect(self)));
         },
         .toggle => {
             const on = boolValue(self, item.id);
@@ -589,7 +718,7 @@ fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !v
             const fill = if (hovered(self, ctrl)) t.element_hover else t.element_background;
             try self.renderer.roundBox(ctrl.x, ctrl.y, ctrl.w, ctrl.h, radius, fill, t.border);
             try self.renderer.textUi(optionLabel(item.id, selectedOption(self, item.id)), ctrl.x + 10, ctrl.y + 18, t.text);
-            try self.renderer.icon(icons.svg("ui:chevron_down"), ctrl.x + ctrl.w - 22, ctrl.y + 6, 14, t.muted);
+            try self.renderer.icon(icons.svg("ui:chevron_up_down"), ctrl.x + ctrl.w - 22, ctrl.y + 6, 14, t.muted);
         },
         .button => {
             const fill = if (hovered(self, ctrl)) t.element_hover else t.element_background;
@@ -627,12 +756,13 @@ fn findRow(lay: *const Layout, index: usize) ?Row {
     return null;
 }
 
-fn maxScroll(r: Rect, lay: *const Layout) f32 {
-    return @max(0, lay.height + content_pad_top * 2 - contentRect(r).h);
+fn maxScroll(self: *App, r: Rect, lay: *const Layout) f32 {
+    return @max(0, lay.height + content_pad_top * 2 - scrollRect(self, r).h);
 }
 fn clampScroll(self: *App, r: Rect, lay: *const Layout) void {
-    self.settings_scroll = std.math.clamp(self.settings_scroll, 0, maxScroll(r, lay));
+    self.settings_scroll = std.math.clamp(self.settings_scroll, 0, maxScroll(self, r, lay));
 }
+
 
 pub fn scroll(self: *App, dy: f32) void {
     self.settings_dropdown = false;
@@ -654,7 +784,7 @@ fn revealFocused(self: *App) void {
     const lay = layout(self);
     const index = focusedItem(self, &lay) orelse return;
     const row = findRow(&lay, index) orelse return;
-    const view = contentRect(dialogRect(self)).h - content_pad_top * 2;
+    const view = scrollRect(self, dialogRect(self)).h - content_pad_top * 2;
     if (row.y < self.settings_scroll) self.settings_scroll = row.y;
     if (row.y + row.h > self.settings_scroll + view) self.settings_scroll = row.y + row.h - view;
 }
@@ -684,25 +814,35 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
         return;
     }
     if (searchRect(r).contains(mx, my)) {
+        if (query(self).len > 0 and clearQueryRect(searchRect(r)).contains(mx, my)) {
+            self.settings_query_len = 0;
+            resetFocus(self);
+        }
         self.settings_focus = .search;
         self.settings_editing_number = false;
         return;
     }
     if (mx < r.x + sidebar_w) {
         var buf: [max_nav]NavEntry = undefined;
-        for (navEntries(self, r, &buf)) |entry| if (entry.rect.contains(mx, my)) {
-            self.settings_query_len = 0;
-            self.settings_focus = .controls;
+        for (navEntries(self, r, &buf), 0..) |entry, ei| if (entry.rect.contains(mx, my)) {
+            self.settings_focus = .nav;
+            self.settings_nav_index = ei;
             self.settings_editing_number = false;
-            self.settings_category = @backingInt(entry.page);
-            self.settings_row = 0;
-            self.settings_scroll = 0;
-            if (entry.section) |section| scrollToSection(self, section);
+            openNavEntry(self, entry);
             return;
         };
         return;
     }
-    if (!c.contains(mx, my)) return;
+    // File-scope header and warning banner buttons.
+    if (editFileRect(self, c).contains(mx, my)) return self.openConfigFile("settings.json");
+    if (self.settings_document_error and bannerRect(c).contains(mx, my)) {
+        const b = bannerRect(c);
+        const fw = self.renderer.widthUi("Fix in settings.json") + 24;
+        const fr: Rect = .{ .x = b.x + b.w - fw - 12, .y = b.y + (b.h - header_button_h) / 2, .w = fw, .h = header_button_h };
+        if (fr.contains(mx, my)) return self.openConfigFile("settings.json");
+        return;
+    }
+    if (!scrollRect(self, r).contains(mx, my)) return;
     var buf: [items.len]usize = undefined;
     const list = focusable(&lay, &buf);
     for (lay.slice()) |row| {
@@ -717,6 +857,7 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
         self.settings_editing_number = false;
         const item = items[index];
         const ctrl = controlRect(self, item, rr);
+        if (item.jsonpath.len > 0 and linkRect(rr).contains(mx, my)) return copySettingsLink(self, index);
         if (resetRect(self, item, rr).contains(mx, my)) {
             if (item.kind == .value) return resetCatalogue(self, index);
             if (helpers.changed(self.settings, item.id)) return resetValue(self, item.id);
@@ -734,6 +875,82 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
         }
         return;
     }
+}
+
+/// Zed's open_and_scroll_to_navbar_entry: a root opens the page and toggles
+/// expansion; a section opens its page and scrolls the section into view.
+fn openNavEntry(self: *App, entry: NavEntry) void {
+    const was_current = entry.page == currentPage(self);
+    self.settings_category = @backingInt(entry.page);
+    self.settings_row = 0;
+    self.settings_query_len = 0;
+    if (entry.section) |section| {
+        setExpanded(self, entry.page, true);
+        scrollToSection(self, section);
+    } else {
+        setExpanded(self, entry.page, !(was_current and expanded(self, entry.page)));
+        self.settings_scroll = 0;
+    }
+}
+/// Zed's settings link (`zed://settings/<path>` → zid's own scheme).
+fn copySettingsLink(self: *App, index: usize) !void {
+    var buf: [256]u8 = undefined;
+    const link = std.fmt.bufPrint(&buf, "zid://settings/{s}", .{items[index].jsonpath}) catch return;
+    const text = try self.gpa.dupeSentinel(u8, link, 0);
+    defer self.gpa.free(text);
+    try sdl.clipboard.setText(text);
+    self.settings_copied = index;
+    self.notice("Copied: {s}", .{link});
+}
+/// ToggleFocusNav: focus the navbar on the current page's root entry.
+fn focusNav(self: *App) void {
+    self.settings_focus = .nav;
+    self.settings_editing_number = false;
+    var nav_buf: [max_nav]NavEntry = undefined;
+    for (navEntries(self, dialogRect(self), &nav_buf), 0..) |entry, i| {
+        if (entry.page == currentPage(self) and entry.section == null) {
+            self.settings_nav_index = i;
+            break;
+        }
+    }
+    revealNav(self);
+}
+fn moveNav(self: *App, dir: i32) void {
+    var nav_buf: [max_nav]NavEntry = undefined;
+    const n = navEntries(self, dialogRect(self), &nav_buf).len;
+    if (n == 0) return;
+    const i: i32 = @intCast(self.settings_nav_index);
+    self.settings_nav_index = @intCast(std.math.clamp(i + dir, 0, @as(i32, @intCast(n - 1))));
+    revealNav(self);
+}
+/// PageUp/PageDown move between root entries (Zed's Focus{Previous,Next}RootNavEntry).
+fn moveNavRoot(self: *App, dir: i32) void {
+    var nav_buf: [max_nav]NavEntry = undefined;
+    const entries = navEntries(self, dialogRect(self), &nav_buf);
+    if (entries.len == 0) return;
+    if (dir > 0) {
+        var i = self.settings_nav_index + 1;
+        while (i < entries.len) : (i += 1) if (entries[i].section == null) {
+            self.settings_nav_index = i;
+            break;
+        };
+    } else {
+        var i = self.settings_nav_index;
+        while (i > 0) {
+            i -= 1;
+            if (entries[i].section == null) {
+                self.settings_nav_index = i;
+                break;
+            }
+        }
+    }
+    revealNav(self);
+}
+fn revealNav(self: *App) void {
+    const top = @as(f32, @floatFromInt(self.settings_nav_index)) * nav_row_h;
+    const available = dialogRect(self).h - sidebar_pad - search_h - 12 - nav_footer_h;
+    if (top < self.settings_nav_scroll) self.settings_nav_scroll = top;
+    if (top + nav_row_h > self.settings_nav_scroll + available) self.settings_nav_scroll = top + nav_row_h - available;
 }
 
 fn scrollToSection(self: *App, section: []const u8) void {
@@ -849,10 +1066,33 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
         }
         return;
     }
+    // Zed's SettingsWindow bindings: Ctrl+F search, Ctrl+, open file,
+    // Ctrl+Shift+E toggle nav focus.
+    if (mods.left_control or mods.right_control) {
+        switch (key) {
+            .f => {
+                self.settings_focus = .search;
+                self.settings_editing_number = false;
+                return;
+            },
+            .comma => return self.openConfigFile("settings.json"),
+            .e => if (shift) {
+                if (self.settings_focus == .nav) self.settings_focus = .controls else focusNav(self);
+                return;
+            },
+            else => {},
+        }
+    }
     if (self.settings_editing_number) {
         switch (key) {
             .escape => self.settings_editing_number = false,
             .return_key, .tab => if (focused) |index| try commitNumber(self, items[index].id),
+            // Zed's NumberField steps the value on up/down while editing.
+            .up, .down => if (focused) |index| {
+                try stepNumber(self, items[index].id, if (key == .up) 1 else -1);
+                const v = std.fmt.bufPrint(&self.settings_number, "{d}", .{numberValue(self, items[index].id)}) catch return;
+                self.settings_number_len = v.len;
+            },
             .backspace => if (self.settings_number_len > 0) {
                 self.settings_number_len -= 1;
             },
@@ -878,12 +1118,7 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
         return;
     }
     switch (key) {
-        .escape => if (self.settings_query_len > 0) {
-            self.settings_query_len = 0;
-            resetFocus(self);
-        } else {
-            self.dialog = .none;
-        },
+        .escape => self.dialog = .none,
         .backspace => if (self.settings_focus == .search and self.settings_query_len > 0) {
             var n = self.settings_query_len - 1;
             while (n > 0 and self.settings_query[n] & 0xc0 == 0x80) n -= 1;
@@ -891,6 +1126,10 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
             resetFocus(self);
         },
         .tab => {
+            if (self.settings_focus == .nav) {
+                moveNav(self, if (shift) -1 else 1);
+                return;
+            }
             if (self.settings_focus == .search) {
                 if (list.len > 0) {
                     self.settings_focus = .controls;
@@ -905,28 +1144,50 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
             }
             revealFocused(self);
         },
-        .up => if (self.settings_row > 0) {
+        .up => if (self.settings_focus == .nav) {
+            moveNav(self, -1);
+        } else if (self.settings_row > 0) {
             self.settings_row -= 1;
         } else if (list.len == 0 and currentPage(self) == .keymap) {
             scroll(self, -binding_h);
         },
-        .down => if (list.len > 0) {
+        .down => if (self.settings_focus == .nav) {
+            moveNav(self, 1);
+        } else if (list.len > 0) {
             self.settings_row = @min(self.settings_row + 1, list.len - 1);
         } else if (currentPage(self) == .keymap) {
             scroll(self, binding_h);
         },
-        .page_up => scroll(self, -200),
-        .page_down => scroll(self, 200),
-        .left, .right => if (self.settings_focus == .controls) {
-            if (focused) |index| {
-                const dir: i32 = if (key == .right) 1 else -1;
-                const item = items[index];
-                switch (item.kind) {
-                    .number => try stepNumber(self, item.id, dir),
-                    .toggle => if (boolValue(self, item.id) != (dir > 0)) try toggle(self, item.id),
-                    .dropdown => try stepOption(self, item.id, dir),
-                    .button, .value => {},
+        .page_up => if (self.settings_focus == .nav) moveNavRoot(self, -1) else scroll(self, -200),
+        .page_down => if (self.settings_focus == .nav) moveNavRoot(self, 1) else scroll(self, 200),
+        .home => if (self.settings_focus == .nav) {
+            self.settings_nav_index = 0;
+            revealNav(self);
+        },
+        .end => if (self.settings_focus == .nav) {
+            var nav_buf: [max_nav]NavEntry = undefined;
+            self.settings_nav_index = navEntries(self, dialogRect(self), &nav_buf).len -| 1;
+            revealNav(self);
+        },
+        // Zed: left toggles nav focus; in the navbar it collapses the root.
+        .left => if (self.settings_focus == .nav) {
+            var nav_buf: [max_nav]NavEntry = undefined;
+            const entries = navEntries(self, dialogRect(self), &nav_buf);
+            if (self.settings_nav_index < entries.len) {
+                const entry = entries[self.settings_nav_index];
+                if (entry.section == null and expanded(self, entry.page)) {
+                    setExpanded(self, entry.page, false);
+                    return;
                 }
+            }
+            self.settings_focus = .controls;
+        } else focusNav(self),
+        .right => if (self.settings_focus == .nav) {
+            var nav_buf: [max_nav]NavEntry = undefined;
+            const entries = navEntries(self, dialogRect(self), &nav_buf);
+            if (self.settings_nav_index < entries.len) {
+                const entry = entries[self.settings_nav_index];
+                if (entry.section == null and !expanded(self, entry.page)) setExpanded(self, entry.page, true);
             }
         },
         .delete => {
@@ -936,14 +1197,21 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
             const id: ?Id = if (focused) |index| items[index].id else null;
             if (helpers.keyboardResetTarget(self.settings, id, self.settings_focus == .controls)) |target| try resetValue(self, target);
         },
-        .return_key => if (self.settings_focus == .controls) {
+        .return_key => if (self.settings_focus == .nav) {
+            var nav_buf: [max_nav]NavEntry = undefined;
+            const entries = navEntries(self, dialogRect(self), &nav_buf);
+            if (self.settings_nav_index < entries.len) {
+                openNavEntry(self, entries[self.settings_nav_index]);
+                self.settings_focus = .controls;
+            }
+        } else if (self.settings_focus == .controls) {
             if (focused) |index| {
                 if (items[index].kind == .number) beginNumber(self, items[index].id) else try activate(self, index);
             }
         },
         else => {},
     }
-    if (key == .up or key == .down) {
+    if ((key == .up or key == .down) and self.settings_focus != .nav) {
         self.settings_focus = .controls;
         revealFocused(self);
     }
