@@ -50,3 +50,13 @@ Opening the same fixture directly under the busy `/tmp` directory also scanned
 4,000 project entries and reached `window ready` at 1,102 ms. Keep fixture-directory
 contents controlled when comparing startup measurements; project scanning and
 GPU/font initialization are part of application startup, unlike the backend test.
+
+## Oversized copy application check
+
+With worker-backed keyboard selection/copy integrated, an offscreen Debug run
+selected the entire sparse 10 GiB fixture and issued Copy (`--keys ctrl-a,ctrl-c`,
+12 frames). The application displayed `Copy: SelectionTooLarge`, retained the
+10,737,418,240-byte selection count, and exited successfully. Peak process RSS
+was 88,324 KiB; elapsed time was 0.44 s. This verifies the rejection path through
+the application without allocating the selected range. It does not verify a
+successful desktop clipboard round trip.
