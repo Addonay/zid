@@ -283,3 +283,30 @@ test "random edited buffers agree with flat reference" {
         }
     }
 }
+
+test "random bounded ranges and cursors agree with flat reference" {
+    const bytes = "ababab xyz aba xyz ababababa end";
+    var buffer = try TextBuffer.init(testing.allocator, bytes);
+    defer buffer.deinit();
+    var random = std.Random.DefaultPrng.init(7289);
+    for ([_][]const u8{ "a", "aba", "abab", "xyz", "missing" }) |needle| {
+        var plan = try SearchPlan.init(testing.allocator, needle, false);
+        defer plan.deinit();
+        for (0..500) |_| {
+            const start = random.random().uintAtMost(usize, bytes.len);
+            const end = random.random().intRangeAtMost(usize, start, bytes.len);
+            const cursor = random.random().intRangeAtMost(usize, start, end);
+            const range: Range = .{ .start = start, .end = end };
+            const next: ?usize = if (std.mem.indexOf(u8, bytes[cursor..end], needle)) |hit| cursor + hit else null;
+            var previous: ?usize = null;
+            var at = start;
+            while (std.mem.indexOfPos(u8, bytes[0..end], at, needle)) |hit| {
+                if (hit >= cursor) break;
+                previous = hit;
+                at = hit + 1;
+            }
+            try testing.expectEqual(next, plan.next(&buffer, range, cursor));
+            try testing.expectEqual(previous, plan.previous(&buffer, range, cursor));
+        }
+    }
+}
