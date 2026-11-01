@@ -160,9 +160,14 @@ test "incremental scan crosses chunks, wraps, caps counts, and rejects revisions
     var dense = try search.SearchPlan.init(allocator, "a", false);
     defer dense.deinit();
     var dense_scan = Scan.init(&doc);
-    while (!dense_scan.done) try std.testing.expect(dense_scan.step(&doc, &dense));
+    var steps: usize = 0;
+    while (!dense_scan.done) : (steps += 1) try std.testing.expect(dense_scan.step(&doc, &dense));
     try std.testing.expectEqual(@as(usize, 9999), dense_scan.count);
     try std.testing.expect(dense_scan.capped);
+    try std.testing.expect(steps < 100);
+    try std.testing.expectEqual(@as(?usize, 39_996), dense_scan.last);
+    try std.testing.expectEqual(@as(?usize, 16_386), dense_scan.match(.next, false));
+    try std.testing.expectEqual(@as(?usize, 16_382), dense_scan.match(.previous, false));
     try doc.insert("x");
     try std.testing.expect(!scan.step(&doc, &plan));
 }
