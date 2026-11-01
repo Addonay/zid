@@ -3,12 +3,14 @@ pub const TextBuffer = @import("editor/text_buffer.zig").TextBuffer;
 pub const Document = @import("editor/document.zig").Document;
 pub const commands = @import("editor/commands.zig");
 pub const search = @import("editor/search.zig");
+pub const find = @import("editor/find.zig");
 pub const Workspace = @import("editor/workspace.zig").Workspace;
 test {
     _ = @import("editor/text_buffer.zig");
     _ = @import("editor/document.zig");
     _ = @import("editor/commands.zig");
     _ = search;
+    _ = find;
     _ = @import("editor/workspace.zig");
 }
 
