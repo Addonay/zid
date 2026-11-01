@@ -5,6 +5,74 @@ const search = @import("search.zig");
 
 pub const Direction = enum { next, previous };
 
+/// Incremental result summary for a single document revision and query.
+/// The caller discards this state whenever either changes. Each step examines
+/// at most 16 KiB plus pattern overlap and retains no match array.
+pub const Scan = struct {
+    const chunk_size = 16 * 1024;
+    const count_limit = 9999;
+    revision: u64,
+    selection_start: usize,
+    selection_end: usize,
+    chunk_start: usize = 0,
+    cursor: usize = 0,
+    count: usize = 0,
+    capped: bool = false,
+    first: ?usize = null,
+    last: ?usize = null,
+    next: ?usize = null,
+    previous: ?usize = null,
+    done: bool = false,
+
+    pub fn init(document: *const Document) Scan {
+        const selection = document.selection();
+        return .{ .revision = document.revision, .selection_start = selection.start, .selection_end = selection.end };
+    }
+
+    /// Returns false for a stale revision; callers must restart rather than
+    /// applying offsets from an older document.
+    pub fn step(self: *Scan, document: *const Document, plan: *const search.SearchPlan) bool {
+        if (document.large != null or document.revision != self.revision) return false;
+        if (self.done) return true;
+        const len = document.buffer.len();
+        const chunk_end = @min(len, self.chunk_start +| chunk_size);
+        const scan_end = @min(len, chunk_end +| (plan.pattern.len - 1));
+        var hits: [128]usize = undefined;
+        const batch = plan.enumerate(&document.buffer, .{ .start = self.chunk_start, .end = scan_end }, self.cursor, &hits);
+        var passed_chunk = false;
+        for (hits[0..batch.written]) |hit| {
+            if (hit >= chunk_end) {
+                passed_chunk = true;
+                break;
+            }
+            if (self.first == null) self.first = hit;
+            self.last = hit;
+            if (hit >= self.selection_end and self.next == null) self.next = hit;
+            if (hit < self.selection_start) self.previous = hit;
+            if (self.count < count_limit) self.count += 1 else self.capped = true;
+        }
+        if (passed_chunk or batch.cursor == null) {
+            if (chunk_end == len) {
+                self.done = true;
+            } else {
+                self.chunk_start = chunk_end;
+                self.cursor = chunk_end;
+            }
+        } else {
+            self.cursor = batch.cursor.?;
+        }
+        return true;
+    }
+
+    pub fn match(self: *const Scan, direction: Direction, wrap: bool) ?usize {
+        if (!self.done) return null;
+        return switch (direction) {
+            .next => self.next orelse if (wrap) self.first else null,
+            .previous => self.previous orelse if (wrap) self.last else null,
+        };
+    }
+};
+
 /// Revalidates the current selection against the query before replacing it.
 /// A stale/mismatched selection is left untouched; Document validates replacement
 /// UTF-8 and line limits before publishing its single undo transaction.
@@ -50,6 +118,33 @@ test "find selection moves in both directions and wraps only when requested" {
     try std.testing.expectEqual(@as(usize, 0), (try selectMatch(&doc, &plan, .previous, false)).?.start);
     try std.testing.expectEqual(@as(usize, 0), doc.history.items.len);
     try std.testing.expect(!doc.dirty());
+}
+
+test "incremental scan crosses chunks, wraps, caps counts, and rejects revisions" {
+    const allocator = std.testing.allocator;
+    const bytes = try allocator.alloc(u8, 40_000);
+    defer allocator.free(bytes);
+    @memset(bytes, 'a');
+    @memcpy(bytes[16_383..16_386], "xyz");
+    @memcpy(bytes[39_997..40_000], "xyz");
+    var doc = try Document.init(allocator, bytes, null);
+    defer doc.deinit();
+    doc.setSelection(16_383, 16_386);
+    var plan = try search.SearchPlan.init(allocator, "xyz", false);
+    defer plan.deinit();
+    var scan = Scan.init(&doc);
+    while (!scan.done) try std.testing.expect(scan.step(&doc, &plan));
+    try std.testing.expectEqual(@as(usize, 2), scan.count);
+    try std.testing.expectEqual(@as(?usize, 39_997), scan.match(.next, false));
+    try std.testing.expectEqual(@as(?usize, 39_997), scan.match(.previous, true));
+    var dense = try search.SearchPlan.init(allocator, "a", false);
+    defer dense.deinit();
+    var dense_scan = Scan.init(&doc);
+    while (!dense_scan.done) try std.testing.expect(dense_scan.step(&doc, &dense));
+    try std.testing.expectEqual(@as(usize, 9999), dense_scan.count);
+    try std.testing.expect(dense_scan.capped);
+    try doc.insert("x");
+    try std.testing.expect(!scan.step(&doc, &plan));
 }
 
 test "replace current revalidates selection and is one undo transaction" {
