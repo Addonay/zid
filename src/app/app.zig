@@ -253,7 +253,7 @@ pub const App = struct {
         self.config_stamp = self.configurationStamp();
         while (self.running) {
             const now = sdl.timer.getMillisecondsSinceInit();
-            const blink = self.focused and self.settings.cursor_blink and self.dialog == .none and !self.panel_focus;
+            const blink = (self.workspace.current().large == null or self.modal != .none) and self.focused and self.settings.cursor_blink and self.dialog == .none and !self.panel_focus;
             const indexing = if (self.workspace.current().large) |*l| blk: {
                 const state = l.poll(&.{});
                 break :blk l.expected_copy != null or l.needs_redraw or ((state.loading or !state.complete) and l.failure == null);
