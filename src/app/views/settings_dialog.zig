@@ -68,6 +68,8 @@ const content_pad_top: f32 = 20;
 const page_header_h: f32 = 52;
 const banner_h: f32 = 60;
 const header_button_h: f32 = 26;
+/// Client-side titlebar drawn by the frameless settings window (Zed's strip).
+const titlebar_h: f32 = 34;
 const title_h: f32 = 44;
 const header_h: f32 = 40;
 const item_h: f32 = 60;
@@ -185,7 +187,7 @@ fn focusedItem(self: *App, lay: *const Layout) ?usize {
 // ---------------------------------------------------------------- geometry
 
 pub fn dialogRect(self: *App) Rect {
-    if (self.settings_window != null) return .{ .w = self.settings_w, .h = self.settings_h };
+    if (self.settings_window != null) return .{ .y = titlebar_h, .w = self.settings_w, .h = @max(1, self.settings_h - titlebar_h) };
     const w = @max(1, @min(920, self.layout.width - 48));
     const h = @max(1, @min(640, self.layout.height - 48));
     return .{ .x = @round((self.layout.width - w) / 2), .y = @round((self.layout.height - h) / 2), .w = w, .h = h };
@@ -411,6 +413,18 @@ fn hovered(self: *App, r: Rect) bool {
     return r.contains(self.mouse_x, self.mouse_y);
 }
 
+/// Frameless-window titlebar: centered "Settings" title, X on the right.
+/// The strip itself drags the window via the hit-test, so only the X acts here.
+fn drawTitlebar(self: *App, r: Rect) !void {
+    const t = self.settings.theme;
+    try self.renderer.rect(r.x, r.y, r.w, r.h - 1, t.panel);
+    try self.renderer.rect(r.x, r.y + r.h - 1, r.w, 1, t.border_variant);
+    const title = "Settings";
+    try self.renderer.textUi(title, r.x + (r.w - self.renderer.widthUi(title)) / 2, r.y + 10, t.muted);
+    const close: Rect = .{ .x = r.x + r.w - r.h, .y = r.y, .w = r.h, .h = r.h };
+    if (hovered(self, close)) try self.renderer.roundRect(close.x + 4, close.y + 4, close.w - 8, close.h - 8, radius, t.ghost_element_hover);
+    try self.renderer.icon(icons.svg("ui:close"), close.x + (close.w - 16) / 2, close.y + (close.h - 16) / 2, 16, if (hovered(self, close)) t.text else t.muted);
+}
 pub fn drawSettings(self: *App) !void {
     const t = self.settings.theme;
     const r = dialogRect(self);
@@ -420,7 +434,8 @@ pub fn drawSettings(self: *App) !void {
 
     const windowed = self.settings_window != null;
     if (windowed) {
-        try self.renderer.rect(r.x, r.y, r.w, r.h, t.editor);
+        try self.renderer.rect(r.x, r.y - titlebar_h, r.w, r.h + titlebar_h, t.editor);
+        try drawTitlebar(self, .{ .x = r.x, .y = r.y - titlebar_h, .w = r.w, .h = titlebar_h });
     } else {
         try self.fill(.{ .w = self.layout.width, .h = self.layout.height }, .{ 0, 0, 0, 140 });
         // Soft drop shadow, then the card itself.
@@ -817,6 +832,12 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
             for (0..optionCount(id)) |i| if (optionRect(popup, i).contains(mx, my)) return selectOption(self, id, i);
             if (popup.contains(mx, my)) return;
         };
+    }
+    if (self.settings_window != null and my < r.y) {
+        // Titlebar strip: the window manager drags it; the X is clickable here.
+        const close: Rect = .{ .x = r.x + r.w - titlebar_h, .y = r.y - titlebar_h, .w = titlebar_h, .h = titlebar_h };
+        if (close.contains(mx, my)) self.closeSettings();
+        return;
     }
     if (!r.contains(mx, my)) {
         self.closeSettings();

@@ -34,6 +34,7 @@ fn settingsEvent(self: *App, e: sdl.events.Event) !bool {
         else => null,
     };
     if (eid == null or eid.? != swid) return false;
+    self.settings_dirty = true;
     switch (e) {
         .window_close_requested => self.closeSettings(),
         .window_focus_gained => {
@@ -64,7 +65,7 @@ fn settingsEvent(self: *App, e: sdl.events.Event) !bool {
             self.mouse_x = motion.x;
             self.mouse_y = motion.y;
         },
-        .mouse_wheel => |wheel| settings_dialog.scroll(self, -wheel.scroll_y * 40),
+        .mouse_wheel => |wheel| settings_dialog.scroll(self, -wheel.scroll_y * 64),
         else => {},
     }
     return true;
@@ -193,7 +194,7 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
                     } else self.database.scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.database.scroll)) + delta, 0, @as(i64, @intCast(table.rows().len -| 1))));
                 }
             } else if (self.dialog == .settings and self.settings_window == null) {
-                settings_dialog.scroll(self, -wheel.scroll_y * 40);
+                settings_dialog.scroll(self, -wheel.scroll_y * 64);
             } else if (self.dialog != .none and self.dialog != .settings) {} else if (modals.scrollModal(self, -wheel.scroll_y)) {} else if (panel.contains(mx, my)) {
                 self.panel_scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.panel_scroll)) + delta, 0, @as(i64, @intCast(self.maxPanelScroll()))));
             } else if (self.keymap_editor_open) {
