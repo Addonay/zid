@@ -62,6 +62,15 @@ pub const Workspace = struct {
             };
         }
         const before = Document.DiskIdentity.fromStat(try std.Io.Dir.cwd().statFile(self.io, absolute, .{}));
+        if (try isImageFile(self.io, absolute)) {
+            var document = try Document.init(self.allocator, "", absolute);
+            errdefer document.deinit();
+            document.image = true;
+            document.disk_identity = before;
+            try self.documents.append(self.allocator, document);
+            self.active = self.documents.items.len - 1;
+            return;
+        }
         if (before.size > max_file_bytes) {
             var document = try Document.initLarge(self.allocator, self.io, absolute);
             errdefer document.deinit();
@@ -185,6 +194,14 @@ pub const Workspace = struct {
             else => return err,
         };
         if (!identity.eql(Document.DiskIdentity.fromStat(stat))) return error.ExternalFileChanged;
+    }
+    /// Content sniffing (PNG/JPEG/GIF/BMP signatures), not the file extension.
+    fn isImageFile(io: std.Io, path: []const u8) !bool {
+        const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+        defer file.close(io);
+        var head: [16]u8 = undefined;
+        const n = file.readPositionalAll(io, &head, 0) catch return false;
+        return @import("../image/image.zig").sniff(head[0..n]) != null;
     }
     pub fn closeActive(self: *Workspace) !void {
         const doc = self.currentOrNull() orelse return;

@@ -17,7 +17,8 @@ remote SSH projects, and opens multi-gigabyte files without loading them into RA
 6. It edits a project on a remote host over SSH.
 
 > **Direction change (2026-11-01):** we now recreate Zed faithfully first; see
-> [ZED_PARITY.md](ZED_PARITY.md). The milestones below remain the long-term plan.
+> [MILESTONES.md](MILESTONES.md) for the Z0–Z10 parity milestones and
+> [ZED_PARITY.md](ZED_PARITY.md) for the crate map. The milestones below remain the long-term plan.
 > Zid-specific designs (piece treap, JumpRope/skip-list and gap-buffer notes, large-file
 > mode) are deferred until after parity, and M7 (database) is paused.
 

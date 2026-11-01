@@ -38,6 +38,8 @@ Specs written while exploring the Zed source live in `docs/zed_port/`.
 | `workspace`, `pane`, `dock`, `status_bar` | `src/app/` | `zed_port/ui_gaps.md` | Partial. See the gap list. |
 | `project_panel`, `tab_switcher`, `file_finder`, `command_palette`, `go_to_line`, `search` | `src/app/views/`, `src/app/input/` | `zed_port/ui_gaps.md` | Partial |
 
+The milestone plan (Z0–Z10, with acceptance criteria) is [MILESTONES.md](MILESTONES.md).
+
 ## Order of work
 
 1. Data model: `sum_tree` → `rope` → `clock` + `text` (Buffer, Anchor, undo/redo,

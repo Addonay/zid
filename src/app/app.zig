@@ -132,6 +132,18 @@ pub const App = struct {
     path_prompt: @import("workspace_actions.zig").PathPrompt = .{},
     /// Set while `zed::Quit` is working through dirty documents.
     quitting: bool = false,
+    /// Background work finished (a decoded image); draw on the next loop pass.
+    redraw_requested: bool = false,
+    /// Image viewers for image documents (decoded textures, zoom, pan).
+    image_views: @import("views/image_view.zig").State = .{},
+    /// Project-relative paths of recently active files, most recent first (file finder
+    /// history). Owned strings.
+    file_history: std.ArrayList([]u8) = .empty,
+    /// File finder preview pane (Zed `picker::TogglePreview`).
+    picker_preview: bool = true,
+    /// Cached preview text for the file-finder selection.
+    preview_file: ?usize = null,
+    preview_bytes: []u8 = &.{},
     tooltip: @import("views/tooltip.zig").State = .{},
     /// Last account status drawn; a change redraws the title bar.
     account_seen: @import("account.zig").Status = .signed_out,
@@ -210,7 +222,26 @@ pub const App = struct {
         const theme = sdl.video.getSystemTheme() orelse return .dark;
         return if (theme == .light) .light else .dark;
     }
+    /// Moves the active document's file to the front of the file-finder history.
+    fn recordHistory(self: *App) void {
+        const doc = self.workspace.currentOrNull() orelse return;
+        const path = doc.path orelse return;
+        const rel = @import("input/pickers.zig").relativeToRoot(self.workspace.root, path) orelse return;
+        if (self.file_history.items.len > 0 and std.mem.eql(u8, self.file_history.items[0], rel)) return;
+        for (self.file_history.items, 0..) |existing, i| if (std.mem.eql(u8, existing, rel)) {
+            const owned = self.file_history.orderedRemove(i);
+            self.file_history.insert(self.gpa, 0, owned) catch self.gpa.free(owned);
+            return;
+        };
+        const owned = self.gpa.dupe(u8, rel) catch return;
+        self.file_history.insert(self.gpa, 0, owned) catch return self.gpa.free(owned);
+        if (self.file_history.items.len > 64) self.gpa.free(self.file_history.pop().?);
+    }
     pub fn deinit(self: *App) void {
+        self.image_views.deinit(self);
+        for (self.file_history.items) |p| self.gpa.free(p);
+        self.file_history.deinit(self.gpa);
+        self.gpa.free(self.preview_bytes);
         self.account.deinit();
         @import("project_edit.zig").cancel(self);
         if (self.settings_document) |*document| document.deinit();
@@ -393,6 +424,7 @@ pub const App = struct {
     pub fn pollAsync(self: *App) void {
         self.database.poll(self.io);
         @import("workspace_actions.zig").poll(self) catch |err| self.notice("{s}", .{@errorName(err)});
+        if (@import("views/image_view.zig").poll(self)) self.redraw_requested = true;
         self.account.poll(self);
         if (self.lsp_root) |root| {
             if (!std.mem.eql(u8, root, self.workspace.root)) {
@@ -456,6 +488,7 @@ pub const App = struct {
             var wait: u31 = if (indexing or self.database.job != null) 16 else if (self.lsp != null) 100 else if (blink) @intCast(500 - @min(500, now - self.last_blink)) else 1000;
             // Animations and delayed UI: the pulsing "Signing in…" label and tooltips.
             if (self.account.signingIn()) wait = @min(wait, 33);
+            if (@import("views/image_view.zig").decoding(self)) wait = @min(wait, 16);
             if (@import("views/tooltip.zig").pendingMs(self)) |ms| wait = @min(wait, @as(u31, @intCast(@min(ms + 1, 1000))));
             var dirty = false;
             if (sdl.events.waitAndPopTimeout(wait)) |pending_event| {
@@ -477,6 +510,10 @@ pub const App = struct {
             if (self.lsp_dirty) {
                 dirty = true;
                 self.lsp_dirty = false;
+            }
+            if (self.redraw_requested) {
+                self.redraw_requested = false;
+                dirty = true;
             }
             const account_status = self.account.status.load(.acquire);
             if (account_status != self.account_seen or account_status == .signing_in) {
@@ -620,6 +657,7 @@ pub const App = struct {
         switch (self.modal) {
             .picker => |*p| {
                 const count = p.entries.items.len;
+                p.follow = true;
                 switch (c) {
                     .@"menu::SelectNext" => if (count > 0) {
                         p.selected = (p.selected + 1) % count;
@@ -1164,13 +1202,15 @@ pub const App = struct {
         const project_name = std.fs.path.basename(self.workspace.root);
         self.renderer.roundWindow(if (self.window.getFlags().maximized or self.window.getFlags().fullscreen) 0 else 10);
         onboarding_view.sync(self);
+        self.recordHistory();
         @import("views/tooltip.zig").beginFrame(self);
         try title_bar.draw(self);
         self.renderer.reserveOverlay();
         try self.drawPanel();
         try self.drawTabs();
-        const item_view = self.keymap_editor_open or onboarding_view.isActive(self);
-        if (self.keymap_editor_open) try modals.drawKeymapEditor(self) else if (onboarding_view.isActive(self)) try onboarding_view.draw(self) else try self.drawEditor();
+        const item_view = self.keymap_editor_open or onboarding_view.isActive(self) or (if (self.workspace.currentOrNull()) |d| d.image else false);
+        const image_doc: ?*zid.Document = if (self.workspace.currentOrNull()) |d| (if (d.image) d else null) else null;
+        if (self.keymap_editor_open) try modals.drawKeymapEditor(self) else if (onboarding_view.isActive(self)) try onboarding_view.draw(self) else if (image_doc) |d| try @import("views/image_view.zig").draw(self, d) else try self.drawEditor();
         if (self.search_open and !item_view and self.workspace.currentOrNull() != null) {
             if (self.search_doc != self.workspace.active or self.search_revision != self.workspace.current().revision) try self.updateSearch(false);
             try @import("views/buffer_search.zig").draw(self);

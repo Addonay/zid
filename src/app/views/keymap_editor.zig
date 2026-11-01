@@ -1,5 +1,5 @@
 //! Zed-style keymap editor (`zed::OpenKeymap`, Ctrl+K Ctrl+S): search field, bindings table and
-//! keycap chips. Rendering, filtering and hit-testing only; the app owns input and focus.
+//! plain keybinding text. Rendering, filtering and hit-testing only; the app owns input and focus.
 //!
 //! Adopted Zed measurements (reference checkout `.ref/zed`):
 //! - Root padding `p_2` (8px) and `gap_1` (4px) between the search row and the table (`keymap_editor.rs` ~2030-2040).
@@ -13,7 +13,7 @@
 //! - Striping: odd rows get `text` at 5% opacity. Hover: `element_hover` at 60% (`data_table.rs:632-653`).
 //! - Selection: 1px `border_focused` outline (Zed's `panel_focused_border`, `keymap_editor.rs:2365-2375`) over `element_selected`.
 //! - Keystrokes: 4px gap between chord keystrokes (`ui/src/components/keybinding.rs:280`). Zed draws Linux keys as
-//!   muted text with no background (`keybinding.rs:259-290, 540-565`). The chip background is a Zid addition.
+//!   muted text with no background (`keybinding.rs:259-290, 540-565`), as drawn here.
 //! - Action names: `humanize` ports `command_palette/src/command_palette.rs:867` (`humanize_action_name`).
 //! - Empty result text "No matches found for the provided query" (`keymap_editor.rs:1270`).
 //! - Unimplemented actions: muted text with a "not yet in Zid" tag (Zid addition).
@@ -37,6 +37,9 @@ pub const State = struct {
     search: LineInput = .{},
     rows: std.ArrayList(u32) = .empty, // indices into keymap.bindings, filtered + sorted
     selected: usize = 0,
+    /// Zed starts with no selected row (`selected_index: None`); a click or a keyboard
+    /// move creates the selection. Until then only the hover highlight shows.
+    has_selection: bool = false,
     scroll: usize = 0,
 
     pub fn deinit(self: *State, gpa: std.mem.Allocator) void {
@@ -137,8 +140,16 @@ pub fn moveSelection(state: *State, delta: isize) void {
         state.selected = 0;
         return;
     }
-    const current: isize = @intCast(state.selected);
     const last: isize = @intCast(count - 1);
+    if (!state.has_selection) {
+        // The first move selects the first (or last) row rather than skipping one.
+        state.has_selection = true;
+        state.selected = if (delta < 0) @intCast(last) else 0;
+        if (delta == std.math.maxInt(i32)) state.selected = @intCast(last);
+        if (delta == -std.math.maxInt(i32)) state.selected = 0;
+        return;
+    }
+    const current: isize = @intCast(state.selected);
     state.selected = @intCast(std.math.clamp(current + delta, 0, last));
 }
 
@@ -299,8 +310,10 @@ pub fn draw(r: *Renderer, t: Theme, area: Rect, km: *const keymap.Keymap, state:
         state.scroll = 0;
     } else {
         state.selected = @min(state.selected, count - 1);
-        if (state.selected < state.scroll) state.scroll = state.selected;
-        if (state.selected >= state.scroll + visible) state.scroll = state.selected + 1 - visible;
+        if (state.has_selection) {
+            if (state.selected < state.scroll) state.scroll = state.selected;
+            if (state.selected >= state.scroll + visible) state.scroll = state.selected + 1 - visible;
+        }
         state.scroll = @min(state.scroll, count -| visible);
     }
 
@@ -323,7 +336,7 @@ pub fn draw(r: *Renderer, t: Theme, area: Rect, km: *const keymap.Keymap, state:
     r.setClip(clipRect(g.table_x, g.rows_y, g.table_w, g.rows_bottom - g.rows_y));
     for (first..last) |i| {
         const row_y = g.rows_y + @as(f32, @floatFromInt(i - first)) * row_h;
-        if (i == state.selected) {
+        if (state.has_selection and i == state.selected) {
             try r.rect(g.table_x, row_y, g.table_w, row_h, t.element_selected);
             try r.rect(g.table_x, row_y, g.table_w, 1, t.border_focused);
             try r.rect(g.table_x, row_y + row_h - 1, g.table_w, 1, t.border_focused);
@@ -414,25 +427,14 @@ fn drawRow(r: *Renderer, t: Theme, g: Geometry, row_y: f32, binding: *const keym
     try drawFit(r, source, g.col_x[4] + cell_pad, baseline, g.col_w[4] - 2 * cell_pad, t.muted, false);
 }
 
-/// Keycap chips for each keystroke of `chord`, left to right; stops at `right` with an ellipsis.
+/// The chord as plain text ("Ctrl-K Ctrl-S"), like Zed's `KeyBinding` element; truncated
+/// with an ellipsis at `right`.
 fn drawChord(r: *Renderer, t: Theme, chord: keymap.Chord, x0: f32, row_y: f32, right: f32, color: [4]u8) !void {
-    const y = row_y + (row_h - chip_h) / 2;
-    var x = x0;
-    for (chord.slice(), 0..) |key, i| {
-        if (i > 0) x += chip_gap;
-        var buf: [64]u8 = undefined;
-        var w: std.Io.Writer = .fixed(&buf);
-        key.format(&w) catch {};
-        const label = w.buffered();
-        const chip_w = r.widthUi(label) + 2 * chip_pad;
-        if (x + chip_w > right) {
-            if (x + r.widthUi(ellipsis) <= right) try r.textUi(ellipsis, x, y + 13, color);
-            return;
-        }
-        try r.roundBox(x, y, chip_w, chip_h, 2, t.element_background, t.border_variant);
-        try r.textUi(label, x + chip_pad, y + 13, color);
-        x += chip_w;
-    }
+    _ = t;
+    var buf: [128]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    chord.format(&w) catch {};
+    try drawFit(r, w.buffered(), x0, row_y + (row_h - chip_h) / 2 + 13, right - x0, color, false);
 }
 
 /// Serializes an action argument compactly; "…" when it does not fit `buf`.
@@ -516,6 +518,10 @@ test "moveSelection clamps to the filtered rows" {
     var state: State = .{};
     defer state.deinit(testing.allocator);
     try state.rows.appendSlice(testing.allocator, &.{ 4, 7, 9 });
+    try testing.expect(!state.has_selection);
+    moveSelection(&state, 1); // the first move selects the first row
+    try testing.expect(state.has_selection);
+    try testing.expectEqual(@as(usize, 0), state.selected);
     moveSelection(&state, 10);
     try testing.expectEqual(@as(usize, 2), state.selected);
     moveSelection(&state, -10);

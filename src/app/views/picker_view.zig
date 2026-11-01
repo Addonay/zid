@@ -1,43 +1,23 @@
-//! Zed-style picker modal rendering (file finder, command palette, recent projects,
-//! tab switcher) and the go-to-line modal. Rendering + hit-testing only; controllers live
-//! in src/app/input/.
+//! Zed picker modal rendering (file finder, command palette, recent projects, tab
+//! switcher) and the go-to-line modal. Rendering and hit-testing only; controllers live
+//! in src/app/input/. Measurements are from `crates/picker`, `crates/command_palette`,
+//! `crates/file_finder` and screenshots of Zed at 1x:
 //!
-//! Measurements adopted (rem = 16px; Tailwind-style gpui units: N => N*0.25rem = N*4px):
-//! - Picker default modal: width `DEFAULT_MODAL_WIDTH = 34rem` (544px), max height
-//!   `DEFAULT_MODAL_MAX_HEIGHT = 24rem` (384px) (crates/picker/src/picker.rs:45-46,
-//!   shape.rs:210-211). Width is `opts.width`, max rows derived from the 384px cap.
-//! - Modal layer: content is `v_flex().h(0).top_20()` => 80px below the window top,
-//!   horizontally centred (crates/workspace/src/modal_layer.rs:315-318).
-//! - Query editor: `h_9` (36px) with `px_2p5` (10px) side padding, followed by a 1px
-//!   `Divider::horizontal()` (crates/picker/src/render.rs:82-98 `render_editor`).
-//! - Results list: `py_1` (4px) top/bottom padding on the list container
-//!   (crates/picker/src/picker.rs:1548 `DynamicSpacing::Base04`, render.rs uniform_list `.py_1()`).
-//! - Row height: no explicit `h_6`/`h_7` exists in crates/ui/src/components/list/list_item.rs;
-//!   rows are `ListItemSpacing::Sparse` (`py_1` = 4px each side, command_palette.rs:777,
-//!   file_finder.rs:2345) around a ~20px label line. Adopted 28px; this is an estimate.
-//! - Visible rows: picker height cap 384px minus editor (36+1) and list padding (8) with
-//!   28px rows => 12 rows max, then scroll (`results_max_height`, shape.rs:540).
-//! - Row content: start slot (icon, 16px, `Icon::new(..).color(Color::Muted)`) then
-//!   `gap_1p5` (6px) then file name (text colour) then directory (`Color::Muted`) with
-//!   `gap_1p5` between them (file_finder.rs ~2345-2360). End slot / keybinding is right
-//!   aligned with `justify_between` + `gap_2` (command_palette.rs:779-800).
-//! - KeyBinding keycaps: `gap(Base04)` = 4px between keys, key chip `py_0p5` + `rounded_xs`
-//!   (2px), `px_0p5` (2px) per side (crates/ui/src/components/keybinding.rs:269-290, 549-560).
-//! - Selected row: `ghost_element_selected`, hovered row: `ghost_element_hover`
-//!   (list_item.rs:323-327). Radius 4px (`rounded_sm`), inset 4px from list edges (task spec).
-//! - Modal surface: `elevated_surface_background` fill, `border` outline, radius 8px (task
-//!   spec; Zed's elevation_3 radius was not re-verified). Shadow: ModalSurface shadows are
-//!   (0,2px,blur 3,a .12) and (0,3px,blur 6,a .08) (elevation.rs:58-70); approximated with
-//!   translucent round rects.
-//! - Separators: `border_variant` 1px (picker.rs:1491-1492, go_to_line.rs:331).
-//! - Go-to-line: `w(rems(24))` = 384px, `elevation_2`, input box `px_2 py_1` (8px / 4px) with
-//!   `border_b_1` `border_variant`, help row `px_2 py_1` with muted label. Footer text is
-//!   `"Current Line: {line} of {last_line} (column {column})"` (go_to_line.rs:137-141).
-//!   Placeholder in Zed is the current `line:column` (go_to_line.rs:127-128).
-//! - Scrollbar: 4px wide thumb (task spec) with `scrollbar_thumb`, minimum 24px high.
-//!
-//! Limits: no keyboard/mouse controllers here, no preview pane, no multi-select checkboxes,
-//! no tooltips. Label truncation is a per-row clip, not an ellipsis.
+//! - Modal 80px below the window top (`top_20`), `elevation_3`-style surface (8px
+//!   radius, `border`), centred. Widths: picker default 34rem (544px), command palette
+//!   38rem (608px); the file finder doubles its width when the preview is shown.
+//! - Query row 37px with 11px text inset, then a 1px `border_variant` divider.
+//! - Rows: 33px in the command palette, 31px elsewhere, with a 1px-inset 4px-radius
+//!   highlight `ghost_element_selected` on the selected row only. Moving the mouse over
+//!   a row selects it (one highlight, as Zed); the wheel scrolls the list without
+//!   moving the selection; keyboard moves keep the selection visible.
+//! - Keybindings are plain muted text ("Ctrl-Shift-P"), not keycaps.
+//! - Footers (`render_footer`, `p_1p5`, `border_t_1`): command palette "Change
+//!   Keybinding…"/"Add Keybinding…" + "Run"; file finder "Preview" toggle, layout
+//!   icons and "Actions…". Button labels 14px, their keybindings 12px muted.
+//! - File-finder preview: the selected file, syntax highlighted with line numbers, in
+//!   the right half, full height.
+//! - The scrollbar appears only while the pointer is over the list (Zed `auto`).
 const std = @import("std");
 const sdl = @import("sdl3");
 const Renderer = @import("../../gfx/renderer.zig").Renderer;
@@ -54,34 +34,56 @@ pub const Item = struct {
     label_positions: []const u16 = &.{},
     detail_positions: []const u16 = &.{},
     hint: []const u8 = "",
+    /// File finder: a recently opened file (Zed shows a history icon at the end).
+    history: bool = false,
 };
+
+pub const Footer = enum { none, command_palette, file_finder };
 
 pub const Options = struct {
     placeholder: []const u8,
     width: f32 = 544,
+    row_h: f32 = 31,
     empty_text: []const u8 = "No matches",
+    footer: Footer = .none,
+    /// Command palette: the selected command already has a binding ("Change" vs "Add").
+    has_binding: bool = false,
+    /// File finder: the preview pane is shown.
+    preview: bool = false,
+    /// Footer keybinding texts, resolved by the caller from the keymap.
+    keys: FooterKeys = .{},
+};
+pub const FooterKeys = struct {
+    secondary_confirm: []const u8 = "",
+    confirm: []const u8 = "",
+    toggle_preview: []const u8 = "",
+    actions: []const u8 = "",
 };
 
-pub const Geometry = struct { modal: Rect, input: Rect, list: Rect, row_h: f32, visible_rows: usize };
+pub const Geometry = struct {
+    modal: Rect,
+    input: Rect,
+    list: Rect,
+    footer: Rect,
+    preview: Rect,
+    row_h: f32,
+    visible_rows: usize,
+};
 
 const modal_top: f32 = 80;
 const modal_radius: f32 = 8;
-const editor_h: f32 = 36;
+const editor_h: f32 = 37;
 const separator_h: f32 = 1;
-const editor_pad_x: f32 = 10;
-const list_pad_y: f32 = 4;
-const row_h: f32 = 28;
-const max_rows: usize = 12;
+const text_pad_x: f32 = 11;
+const list_pad_y: f32 = 5;
+const default_list_max_h: f32 = 384;
+const footer_h: f32 = 35;
 const row_radius: f32 = 4;
-const row_inset_x: f32 = 4;
-const text_pad_x: f32 = 10;
+const row_inset_x: f32 = 5;
 const icon_size: f32 = 16;
 const icon_gap: f32 = 6;
 const detail_gap: f32 = 6;
-const hint_gap: f32 = 8;
-const keycap_h: f32 = 18;
-const keycap_pad_x: f32 = 4;
-const keycap_gap: f32 = 4;
+const hint_gap: f32 = 12;
 const scrollbar_w: f32 = 4;
 const scrollbar_min_h: f32 = 24;
 
@@ -92,20 +94,29 @@ const go_to_line_footer_h: f32 = 28;
 
 /// Computes the modal geometry for a window of size `window` (x=0,y=0,w,h).
 pub fn geometry(window: Rect, item_count: usize, opts: Options) Geometry {
-    const width = @min(opts.width, @max(0, window.w - 16));
-    // Never extend past the window: keep a 16px bottom margin below the list.
-    const room = window.h - modal_top - editor_h - separator_h - 2 * list_pad_y - 16;
-    const fit: usize = @max(1, @as(usize, @intFromFloat(@max(0, room) / row_h)));
-    const visible: usize = if (item_count == 0) 1 else @min(item_count, @min(max_rows, fit));
-    const list_h = @as(f32, @floatFromInt(visible)) * row_h + 2 * list_pad_y;
-    const x = window.x + (window.w - width) / 2;
+    const preview = opts.preview and window.w >= opts.width * 2 + 32;
+    const list_w = @min(opts.width, @max(0, window.w - 16));
+    const total_w = if (preview) list_w * 2 else list_w;
+    const footer: f32 = if (opts.footer != .none) footer_h else 0;
+    // A preview picker is taller; plain pickers cap their list at 24rem.
+    const max_list = if (preview) @max(default_list_max_h, @min(590, window.h - modal_top - editor_h - footer - 60)) else default_list_max_h;
+    const room = @min(max_list, window.h - modal_top - editor_h - separator_h - footer - 16);
+    const fit: usize = @max(1, @as(usize, @intFromFloat(@max(0, room - 2 * list_pad_y) / opts.row_h)));
+    const visible: usize = if (item_count == 0) 1 else @min(item_count, fit);
+    // Zed keeps the full 24rem list height once results overflow it.
+    const list_h = if (item_count > fit) room else @as(f32, @floatFromInt(visible)) * opts.row_h + 2 * list_pad_y;
+    const body_h = if (preview) room else list_h;
+    const x = window.x + (window.w - total_w) / 2;
     const y = window.y + modal_top;
+    const modal_h = editor_h + separator_h + body_h + footer;
     return .{
-        .modal = .{ .x = x, .y = y, .w = width, .h = editor_h + separator_h + list_h },
-        .input = .{ .x = x, .y = y, .w = width, .h = editor_h },
-        .list = .{ .x = x, .y = y + editor_h + separator_h, .w = width, .h = list_h },
-        .row_h = row_h,
-        .visible_rows = visible,
+        .modal = .{ .x = x, .y = y, .w = total_w, .h = modal_h },
+        .input = .{ .x = x, .y = y, .w = list_w, .h = editor_h },
+        .list = .{ .x = x, .y = y + editor_h + separator_h, .w = list_w, .h = body_h },
+        .footer = .{ .x = x, .y = y + modal_h - footer, .w = list_w, .h = footer },
+        .preview = if (preview) .{ .x = x + list_w, .y = y, .w = list_w, .h = modal_h } else .{},
+        .row_h = opts.row_h,
+        .visible_rows = visible + @as(usize, if (item_count > fit) 1 else 0),
     };
 }
 
@@ -115,53 +126,119 @@ pub fn itemAt(window: Rect, item_count: usize, scroll: usize, opts: Options, mx:
     if (!g.list.contains(mx, my)) return null;
     const top = g.list.y + list_pad_y;
     if (my < top) return null;
-    const slot: usize = @intFromFloat(@floor((my - top) / row_h));
-    if (slot >= g.visible_rows) return null;
+    const slot: usize = @intFromFloat(@floor((my - top) / g.row_h));
     const index = scroll + slot;
     if (index >= item_count) return null;
     return index;
 }
 
-/// Draws the modal; adjusts `scroll.*` so `selected` stays visible. mouse = {x,y} for hover.
-pub fn draw(r: *Renderer, t: Theme, window: Rect, input: *const LineInput, items: []const Item, selected: usize, scroll: *usize, opts: Options, caret_visible: bool, mouse: [2]f32) !void {
+pub const FooterButton = enum { change_keybinding, run, toggle_preview, actions };
+pub const FooterHit = struct { button: FooterButton, rect: Rect };
+
+/// Footer buttons right to left (Zed `justify_end`, `gap_1`), plus the file finder's
+/// left-aligned Preview toggle.
+pub fn footerButtons(r: *Renderer, g: Geometry, opts: Options, out: *[4]FooterHit) []FooterHit {
+    var n: usize = 0;
+    if (opts.footer == .none) return out[0..0];
+    const y = g.footer.y + 6;
+    const h: f32 = 23;
+    var right = g.footer.x + g.footer.w - 6;
+    const add = struct {
+        fn f(rr: *Renderer, label: []const u8, key: []const u8) f32 {
+            return rr.widthUi(label) + (if (key.len > 0) 6 + rr.widthSmall(key) else 0) + 12;
+        }
+    }.f;
+    switch (opts.footer) {
+        .command_palette => {
+            const run_w = add(r, "Run", opts.keys.confirm);
+            right -= run_w;
+            out[n] = .{ .button = .run, .rect = .{ .x = right, .y = y, .w = run_w, .h = h } };
+            n += 1;
+            right -= 4;
+            const label = if (opts.has_binding) "Change Keybinding…" else "Add Keybinding…";
+            const w = add(r, label, opts.keys.secondary_confirm);
+            right -= w;
+            out[n] = .{ .button = .change_keybinding, .rect = .{ .x = right, .y = y, .w = w, .h = h } };
+            n += 1;
+        },
+        .file_finder => {
+            const w = add(r, "Actions…", opts.keys.actions);
+            right -= w;
+            out[n] = .{ .button = .actions, .rect = .{ .x = right, .y = y, .w = w, .h = h } };
+            n += 1;
+            const pw = add(r, "Preview", opts.keys.toggle_preview);
+            out[n] = .{ .button = .toggle_preview, .rect = .{ .x = g.footer.x + 6, .y = y, .w = pw, .h = h } };
+            n += 1;
+        },
+        .none => {},
+    }
+    return out[0..n];
+}
+fn footerLabel(b: FooterButton, opts: Options) struct { []const u8, []const u8 } {
+    return switch (b) {
+        .run => .{ "Run", opts.keys.confirm },
+        .change_keybinding => .{ if (opts.has_binding) "Change Keybinding…" else "Add Keybinding…", opts.keys.secondary_confirm },
+        .toggle_preview => .{ "Preview", opts.keys.toggle_preview },
+        .actions => .{ "Actions…", opts.keys.actions },
+    };
+}
+
+/// Draws the modal; keeps `selected` visible when `follow.*` is set (keyboard moves).
+pub fn draw(r: *Renderer, t: Theme, window: Rect, input: *const LineInput, items: []const Item, selected: usize, scroll: *usize, follow: *bool, opts: Options, caret_visible: bool, mouse: [2]f32) !Geometry {
     const count = items.len;
     const g = geometry(window, count, opts);
-    const visible = g.visible_rows;
-    const max_scroll: usize = if (count > visible) count - visible else 0;
+    const full_rows: usize = @intFromFloat(@max(1, (g.list.h - 2 * list_pad_y) / g.row_h));
+    const max_scroll: usize = if (count > full_rows) count - full_rows else 0;
     if (scroll.* > max_scroll) scroll.* = max_scroll;
-    if (count > 0) {
+    if (follow.* and count > 0) {
         const sel = @min(selected, count - 1);
         if (sel < scroll.*) scroll.* = sel;
-        if (sel >= scroll.* + visible) scroll.* = sel + 1 - visible;
+        if (sel >= scroll.* + full_rows) scroll.* = sel + 1 - full_rows;
+        follow.* = false;
     }
-    const hovered = itemAt(window, count, scroll.*, opts, mouse[0], mouse[1]);
 
     try drawShadow(r, g.modal, modal_radius);
     try r.roundBox(g.modal.x, g.modal.y, g.modal.w, g.modal.h, modal_radius, t.elevated_surface, t.border);
-    try drawInputField(r, t, input, insetInput(g.input), opts.placeholder, caret_visible);
-    try r.rect(g.modal.x + 1, g.input.y + g.input.h, g.modal.w - 2, separator_h, t.border_variant);
+    try drawInputField(r, t, input, .{ .x = g.input.x + text_pad_x, .y = g.input.y + 8, .w = g.input.w - 2 * text_pad_x, .h = 20 }, opts.placeholder, caret_visible);
+    try r.rect(g.modal.x + 1, g.input.y + g.input.h, g.list.w - 1, separator_h, t.border_variant);
 
     const list = g.list;
     const inner_top = list.y + list_pad_y;
     r.setClip(clipOf(list));
     if (count == 0) {
-        try r.textUi(opts.empty_text, list.x + text_pad_x, inner_top + row_h / 2 + 5, t.muted);
+        try r.textUi(opts.empty_text, list.x + text_pad_x, inner_top + g.row_h / 2 + 5, t.muted);
     } else {
-        const end = @min(count, scroll.* + visible);
         var index = scroll.*;
+        const end = @min(count, scroll.* + g.visible_rows + 1);
         while (index < end) : (index += 1) {
-            const row_y = inner_top + @as(f32, @floatFromInt(index - scroll.*)) * row_h;
-            try drawRow(r, t, items[index], list, row_y, index == selected, hovered == index);
+            const row_y = inner_top + @as(f32, @floatFromInt(index - scroll.*)) * g.row_h;
+            if (row_y > list.y + list.h) break;
+            try drawRow(r, t, items[index], list, row_y, g.row_h, index == selected);
         }
-        if (count > visible) {
-            const inner_h = @as(f32, @floatFromInt(visible)) * row_h;
-            const thumb_h = @max(scrollbar_min_h, inner_h * @as(f32, @floatFromInt(visible)) / @as(f32, @floatFromInt(count)));
-            const fraction = @as(f32, @floatFromInt(scroll.*)) / @as(f32, @floatFromInt(max_scroll));
-            const thumb_y = inner_top + (inner_h - thumb_h) * fraction;
-            try r.roundRect(list.x + list.w - scrollbar_w - 2, thumb_y, scrollbar_w, thumb_h, scrollbar_w / 2, t.scrollbar_thumb);
+        // Zed's `auto` scrollbar: only while the pointer is over the list.
+        if (count > full_rows and list.contains(mouse[0], mouse[1])) {
+            const inner_h = list.h - 2 * list_pad_y;
+            const thumb_h = @max(scrollbar_min_h, inner_h * @as(f32, @floatFromInt(full_rows)) / @as(f32, @floatFromInt(count)));
+            const fraction = @as(f32, @floatFromInt(scroll.*)) / @as(f32, @floatFromInt(@max(1, max_scroll)));
+            try r.roundRect(list.x + list.w - scrollbar_w - 3, inner_top + (inner_h - thumb_h) * fraction, scrollbar_w, thumb_h, scrollbar_w / 2, t.scrollbar_thumb);
         }
     }
     r.setClip(null);
+
+    if (opts.footer != .none) {
+        try r.rect(g.footer.x + 1, g.footer.y, g.footer.w - 1, 1, t.border_variant);
+        var buf: [4]FooterHit = undefined;
+        for (footerButtons(r, g, opts, &buf)) |hit| {
+            const b = hit.rect;
+            const active = hit.button == .toggle_preview and opts.preview;
+            if (b.contains(mouse[0], mouse[1])) try r.roundRect(b.x, b.y, b.w, b.h, 4, t.ghost_element_hover);
+            const text = footerLabel(hit.button, opts);
+            try r.textUi(text[0], b.x + 6, b.y + 16, if (active) t.accent else t.text);
+            if (text[1].len > 0) try r.textSmall(text[1], b.x + 6 + r.widthUi(text[0]) + 6, b.y + 16, t.muted);
+        }
+    }
+    if (g.preview.w > 0) try r.rect(g.preview.x, g.preview.y + 1, 1, g.preview.h - 2, t.border_variant);
+    return g;
 }
 
 /// Go-to-line modal: single-line input with placeholder and a muted footer line (e.g. "Current Line: 12 of 300 (column 4)").
@@ -178,155 +255,87 @@ pub fn drawGoToLine(r: *Renderer, t: Theme, window: Rect, input: *const LineInpu
     try r.textUi(footer, x + 8, y + go_to_line_input_h + separator_h + go_to_line_footer_h / 2 + 5, t.muted);
 }
 
-fn insetInput(input: Rect) Rect {
-    return .{ .x = input.x + editor_pad_x, .y = input.y, .w = input.w - 2 * editor_pad_x, .h = input.h };
-}
-
 fn clipOf(rect: Rect) sdl.rect.IRect {
-    return .{
-        .x = @intFromFloat(@floor(rect.x)),
-        .y = @intFromFloat(@floor(rect.y)),
-        .w = @intFromFloat(@ceil(@max(0, rect.w))),
-        .h = @intFromFloat(@ceil(@max(0, rect.h))),
-    };
+    return .{ .x = @intFromFloat(@floor(rect.x)), .y = @intFromFloat(@floor(rect.y)), .w = @intFromFloat(@max(0, @ceil(rect.w))), .h = @intFromFloat(@max(0, @ceil(rect.h))) };
 }
 
 fn drawShadow(r: *Renderer, box: Rect, radius: f32) !void {
-    try r.roundRect(box.x - 2, box.y + 1, box.w + 4, box.h + 4, radius + 2, .{ 0, 0, 0, 20 });
-    try r.roundRect(box.x - 1, box.y + 2, box.w + 2, box.h + 2, radius + 1, .{ 0, 0, 0, 30 });
+    try r.roundRect(box.x - 1, box.y + 2, box.w + 2, box.h + 2, radius + 1, .{ 0, 0, 0, 31 });
+    try r.roundRect(box.x - 3, box.y + 3, box.w + 6, box.h + 6, radius + 3, .{ 0, 0, 0, 20 });
 }
 
 fn drawInputField(r: *Renderer, t: Theme, input: *const LineInput, rect: Rect, placeholder: []const u8, caret_visible: bool) !void {
-    const baseline = rect.y + rect.h / 2 + 5;
     const text = input.text();
-    const sel = input.selection();
-    const caret_x = r.widthUi(text[0..input.cursor]);
-    const scroll_x = @max(0, caret_x - (rect.w - 2));
-    const origin_x = rect.x - scroll_x;
-
-    r.setClip(clipOf(rect));
+    const baseline = rect.y + rect.h / 2 + 5;
+    r.setClip(clipOf(.{ .x = rect.x - 2, .y = rect.y - 4, .w = rect.w + 4, .h = rect.h + 8 }));
     defer r.setClip(null);
-    if (text.len == 0) {
-        try r.textUi(placeholder, rect.x, baseline, t.placeholder);
-    } else {
-        if (sel.end > sel.start) {
-            const start_x = origin_x + r.widthUi(text[0..sel.start]);
-            const end_x = origin_x + r.widthUi(text[0..sel.end]);
-            try r.rect(start_x, rect.y + (rect.h - 18) / 2, end_x - start_x, 18, t.selection);
-        }
-        try r.textUi(text, origin_x, baseline, t.text);
-    }
-    if (caret_visible) {
-        try r.rect(origin_x + caret_x, rect.y + (rect.h - 16) / 2, 1, 16, t.accent);
-    }
+    const sel = input.selection();
+    if (sel.start != sel.end) try r.rect(rect.x + r.widthUi(text[0..sel.start]), rect.y, r.widthUi(text[sel.start..sel.end]), rect.h, t.element_selected);
+    if (text.len == 0) try r.textUi(placeholder, rect.x, baseline, t.placeholder) else try r.textUi(text, rect.x, baseline, t.text);
+    if (caret_visible) try r.rect(rect.x + r.widthUi(text[0..input.cursor]), rect.y, 2, rect.h, t.accent);
 }
 
 fn highlighted(positions: []const u16, text: []const u8, index: usize) bool {
-    // UTF-8 continuation bytes share the highlight state of their lead byte.
-    var start = index;
-    while (start > 0 and text[start] & 0xc0 == 0x80) start -= 1;
-    if (start > std.math.maxInt(u16)) return false;
-    return std.mem.indexOfScalar(u16, positions, @intCast(start)) != null;
+    _ = text;
+    return std.mem.indexOfScalar(u16, positions, @intCast(index)) != null;
 }
 
-fn drawHighlighted(r: *Renderer, text: []const u8, positions: []const u16, x: f32, baseline: f32, base: [4]u8, hl: [4]u8) !f32 {
+fn drawHighlighted(r: *Renderer, text: []const u8, positions: []const u16, x: f32, baseline: f32, base: [4]u8, hl: [4]u8, small: bool) !f32 {
     var cursor_x = x;
     var i: usize = 0;
     while (i < text.len) {
         const on = highlighted(positions, text, i);
         var j = i + 1;
-        while (j < text.len and highlighted(positions, text, j) == on) j += 1;
+        while (j < text.len and highlighted(positions, text, j) == on) : (j += 1) {}
         const segment = text[i..j];
-        try r.textUi(segment, cursor_x, baseline, if (on) hl else base);
-        cursor_x += r.widthUi(segment);
+        if (small) try r.textSmall(segment, cursor_x, baseline, if (on) hl else base) else try r.textUi(segment, cursor_x, baseline, if (on) hl else base);
+        cursor_x += if (small) r.widthSmall(segment) else r.widthUi(segment);
         i = j;
     }
     return cursor_x - x;
 }
 
-fn keycapWidth(r: *Renderer, key: []const u8) f32 {
-    return r.widthSmall(key) + 2 * keycap_pad_x;
-}
-
-fn hintWidth(r: *Renderer, hint: []const u8) f32 {
-    var total: f32 = 0;
-    var first = true;
-    var it = std.mem.tokenizeAny(u8, hint, "- ");
-    while (it.next()) |key| {
-        if (!first) total += keycap_gap;
-        first = false;
-        total += keycapWidth(r, key);
-    }
-    return total;
-}
-
-fn drawHint(r: *Renderer, t: Theme, hint: []const u8, right_edge: f32, row_y: f32) !void {
-    var x = right_edge - hintWidth(r, hint);
-    const chip_y = row_y + (row_h - keycap_h) / 2;
-    var first = true;
-    var it = std.mem.tokenizeAny(u8, hint, "- ");
-    while (it.next()) |key| {
-        if (!first) x += keycap_gap;
-        first = false;
-        const width = keycapWidth(r, key);
-        try r.roundBox(x, chip_y, width, keycap_h, 2, t.element_hover, t.border_variant);
-        try r.textSmall(key, x + keycap_pad_x, chip_y + keycap_h / 2 + 4, t.muted);
-        x += width;
-    }
-}
-
-fn drawRow(r: *Renderer, t: Theme, item: Item, list: Rect, row_y: f32, selected: bool, hovered: bool) !void {
+fn drawRow(r: *Renderer, t: Theme, item: Item, list: Rect, row_y: f32, row_h: f32, selected: bool) !void {
     const band_x = list.x + row_inset_x;
     const band_w = list.w - 2 * row_inset_x;
-    if (selected) {
-        try r.roundRect(band_x, row_y, band_w, row_h, row_radius, t.ghost_element_selected);
-    } else if (hovered) {
-        try r.roundRect(band_x, row_y, band_w, row_h, row_radius, t.ghost_element_hover);
-    }
+    if (selected) try r.roundRect(band_x, row_y + 0.5, band_w, row_h - 1, row_radius, t.ghost_element_selected);
 
     const baseline = row_y + row_h / 2 + 5;
     const right = list.x + list.w - text_pad_x;
-    const hint_w = if (item.hint.len > 0) hintWidth(r, item.hint) else 0;
-    const text_right = if (hint_w > 0) right - hint_w - hint_gap else right;
+    const hint_w = if (item.hint.len > 0) r.widthUi(item.hint) else 0;
+    const end_icon: f32 = if (item.history) 14 + 8 else 0;
+    const text_right = right - end_icon - (if (hint_w > 0) hint_w + hint_gap else 0);
     var x = list.x + text_pad_x;
     if (item.icon) |svg| {
         if (item.icon_colored)
-            try r.colorIcon(svg, x, row_y + (row_h - icon_size) / 2, icon_size, 255)
+            try r.colorIcon(svg, x, row_y + (row_h - 14) / 2, 14, 255)
         else
-            try r.icon(svg, x, row_y + (row_h - icon_size) / 2, icon_size, t.muted);
-        x += icon_size + icon_gap;
+            try r.icon(svg, x, row_y + (row_h - 14) / 2, 14, t.muted);
+        x += 14 + icon_gap;
     }
 
-    r.setClip(clipOf(.{ .x = x, .y = row_y, .w = text_right - x, .h = row_h }));
-    const label_w = try drawHighlighted(r, item.label, item.label_positions, x, baseline, t.text, t.accent);
-    if (item.detail.len > 0) {
-        _ = try drawHighlighted(r, item.detail, item.detail_positions, x + label_w + detail_gap, baseline, t.muted, t.accent);
-    }
+    r.setClip(clipOf(.{ .x = x, .y = row_y, .w = @max(0, text_right - x), .h = row_h }));
+    const label_w = try drawHighlighted(r, item.label, item.label_positions, x, baseline, t.text, t.accent, false);
+    // File-finder directories are smaller and muted, after the name.
+    if (item.detail.len > 0) _ = try drawHighlighted(r, item.detail, item.detail_positions, x + label_w + detail_gap, baseline, t.muted, t.accent, item.icon != null);
     r.setClip(clipOf(list));
 
-    if (hint_w > 0) try drawHint(r, t, item.hint, right, row_y);
+    if (hint_w > 0) try r.textUi(item.hint, right - end_icon - hint_w, baseline, t.muted);
+    if (item.history) try r.icon(@import("icons").svg("ui:history_rerun"), right - 14, row_y + (row_h - 14) / 2, 14, t.muted);
 }
 
 test "geometry and itemAt agree" {
     const window = Rect{ .x = 0, .y = 0, .w = 1000, .h = 800 };
     const opts = Options{ .placeholder = "" };
-
     const small = geometry(window, 3, opts);
     try std.testing.expectEqual(@as(usize, 3), small.visible_rows);
     var index: usize = 0;
     while (index < 3) : (index += 1) {
-        const center_y = small.list.y + list_pad_y + (@as(f32, @floatFromInt(index)) + 0.5) * row_h;
+        const center_y = small.list.y + list_pad_y + (@as(f32, @floatFromInt(index)) + 0.5) * opts.row_h;
         try std.testing.expectEqual(@as(?usize, index), itemAt(window, 3, 0, opts, small.list.x + 20, center_y));
     }
-    const beyond_y = small.list.y + list_pad_y + 3.5 * row_h;
-    try std.testing.expectEqual(@as(?usize, null), itemAt(window, 3, 0, opts, small.list.x + 20, beyond_y));
-
     const large = geometry(window, 40, opts);
-    try std.testing.expectEqual(max_rows, large.visible_rows);
-    const scrolled_y = large.list.y + list_pad_y + 0.5 * row_h;
+    const scrolled_y = large.list.y + list_pad_y + 0.5 * opts.row_h;
     try std.testing.expectEqual(@as(?usize, 5), itemAt(window, 40, 5, opts, large.list.x + 20, scrolled_y));
-
-    const empty = geometry(window, 0, opts);
-    const empty_y = empty.list.y + list_pad_y + 0.5 * row_h;
-    try std.testing.expectEqual(@as(?usize, null), itemAt(window, 0, 0, opts, empty.list.x + 20, empty_y));
+    try std.testing.expectEqual(@as(?usize, null), itemAt(window, 0, 0, opts, large.list.x + 20, scrolled_y));
 }

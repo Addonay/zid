@@ -46,6 +46,10 @@ pub const ui_font_px = 14;
 pub const ui_small_font_px = 12;
 /// Zed `HeadlineSize::Small` (`rems(1.0)` = 16px).
 const Vertex = extern struct { x: f32, y: f32, u: f32, v: f32, color: [4]u8 };
+pub const ImageId = u32;
+const GpuImage = struct { texture: ?gpu.Texture, width: u32, height: u32 };
+const PendingUpload = struct { id: ImageId, transfer: gpu.TransferBuffer };
+const Batch = struct { start: u32, image: ?ImageId };
 const Glyph = struct { style: FontStyle = .mono, index: u32 = 0, stamp: u32 = 0, valid: bool = false, left: i32 = 0, top: i32 = 0, w: u32 = 0, h: u32 = 0 };
 const Icon = struct { hash: u64 = 0, len: usize = 0, size: u8 = 0, stamp: u32 = 0, valid: bool = false };
 pub const Renderer = struct {
@@ -60,6 +64,14 @@ pub const Renderer = struct {
     erase_pipeline: gpu.GraphicsPipeline,
     atlas: gpu.Texture,
     sampler: gpu.Sampler,
+    /// Linear sampler for images (scaled photos, avatars).
+    image_sampler: gpu.Sampler,
+    /// 1x1 texture bound to the image slot when no image is drawn.
+    no_image: gpu.Texture,
+    images: std.ArrayList(GpuImage) = .empty,
+    pending_uploads: std.ArrayList(PendingUpload) = .empty,
+    /// Vertex ranges that share one bound image (split only when the image changes).
+    batches: std.ArrayList(Batch) = .empty,
     vertices: gpu.Buffer,
     transfer: gpu.TransferBuffer,
     face: Face,
@@ -119,7 +131,7 @@ pub const Renderer = struct {
         errdefer device.releaseWindow(window);
         const vs = try device.createShader(.{ .code = @embedFile("ui.vert.spv"), .entry_point = "main", .format = .{ .spirv = true }, .stage = .vertex });
         defer device.releaseShader(vs);
-        const fs = try device.createShader(.{ .code = @embedFile("ui.frag.spv"), .entry_point = "main", .format = .{ .spirv = true }, .stage = .fragment, .num_samplers = 2 });
+        const fs = try device.createShader(.{ .code = @embedFile("ui.frag.spv"), .entry_point = "main", .format = .{ .spirv = true }, .stage = .fragment, .num_samplers = 3 });
         defer device.releaseShader(fs);
         const vb = [_]gpu.VertexBufferDescription{.{ .slot = 0, .pitch = @sizeOf(Vertex), .input_rate = .vertex }};
         const va = [_]gpu.VertexAttribute{ .{ .location = 0, .buffer_slot = 0, .format = .f32x2, .offset = 0 }, .{ .location = 1, .buffer_slot = 0, .format = .f32x2, .offset = 8 }, .{ .location = 2, .buffer_slot = 0, .format = .u8x4_normalized, .offset = 16 } };
@@ -143,11 +155,15 @@ pub const Renderer = struct {
         @memset(color_pixels, 0);
         const sampler = try device.createSampler(.{ .address_mode_u = .clamp_to_edge, .address_mode_v = .clamp_to_edge });
         errdefer device.releaseSampler(sampler);
+        const image_sampler = try device.createSampler(.{ .address_mode_u = .clamp_to_edge, .address_mode_v = .clamp_to_edge, .min_filter = .linear, .mag_filter = .linear });
+        errdefer device.releaseSampler(image_sampler);
+        const no_image = try device.createTexture(.{ .format = .r8g8b8a8_unorm, .usage = .{ .sampler = true }, .width = 1, .height = 1 });
+        errdefer device.releaseTexture(no_image);
         const vertices = try device.createBuffer(.{ .usage = .{ .vertex = true }, .size = max_vertices * @sizeOf(Vertex) });
         errdefer device.releaseBuffer(vertices);
         const transfer = try device.createTransferBuffer(.{ .usage = .upload, .size = side * side + color_bytes + max_vertices * @sizeOf(Vertex) });
         errdefer device.releaseTransferBuffer(transfer);
-        return .{ .allocator = a, .window = window, .device = device, .format = swap_format, .pipeline = pipeline, .erase_pipeline = erase_pipeline, .atlas = atlas, .color_atlas = color_atlas, .color_pixels = color_pixels, .sampler = sampler, .vertices = vertices, .transfer = transfer, .face = face, .italic_face = italic_face, .ui_face = ui_face, .ui_small_face = ui_small_face, .extra = extra, .pixels = pixels, .cpu = cpu, .mono_size = size };
+        return .{ .allocator = a, .window = window, .device = device, .format = swap_format, .pipeline = pipeline, .erase_pipeline = erase_pipeline, .atlas = atlas, .color_atlas = color_atlas, .color_pixels = color_pixels, .sampler = sampler, .image_sampler = image_sampler, .no_image = no_image, .vertices = vertices, .transfer = transfer, .face = face, .italic_face = italic_face, .ui_face = ui_face, .ui_small_face = ui_small_face, .extra = extra, .pixels = pixels, .cpu = cpu, .mono_size = size };
     }
     fn px(self: *const Renderer, logical: u32) u32 {
         return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(logical)) * self.scale))));
@@ -198,6 +214,13 @@ pub const Renderer = struct {
         self.device.releaseTransferBuffer(self.transfer);
         self.device.releaseBuffer(self.vertices);
         self.device.releaseSampler(self.sampler);
+        self.device.releaseSampler(self.image_sampler);
+        self.device.releaseTexture(self.no_image);
+        for (self.images.items) |img| if (img.texture) |tex| self.device.releaseTexture(tex);
+        for (self.pending_uploads.items) |u| self.device.releaseTransferBuffer(u.transfer);
+        self.images.deinit(self.allocator);
+        self.pending_uploads.deinit(self.allocator);
+        self.batches.deinit(self.allocator);
         self.device.releaseTexture(self.atlas);
         self.device.releaseTexture(self.color_atlas);
         self.allocator.free(self.color_pixels);
@@ -221,6 +244,8 @@ pub const Renderer = struct {
         self.w = @floatFromInt(w);
         self.h = @floatFromInt(h);
         self.count = 0;
+        self.batches.clearRetainingCapacity();
+        self.batches.append(self.allocator, .{ .start = 0, .image = null }) catch {};
         self.vertex_limit = max_vertices;
         self.degraded = false;
         self.clip = null;
@@ -474,6 +499,53 @@ pub const Renderer = struct {
         self.icons[i].stamp = self.frame;
         try self.quad(@round(x * self.scale) / self.scale, @round(y * self.scale) / self.scale, size, size, @as(f32, @floatFromInt(sx)) / side, @as(f32, @floatFromInt(sy)) / side, @as(f32, @floatFromInt(n)) / side, @as(f32, @floatFromInt(n)) / side, color);
     }
+    /// Uploads a straight-alpha RGBA8 image to its own GPU texture (sent with the next
+    /// frame). Images wider or taller than 8192px must be resized by the caller.
+    pub fn createImage(self: *Renderer, rgba: []const u8, image_w: u32, image_h: u32) !ImageId {
+        if (image_w == 0 or image_h == 0 or image_w > 8192 or image_h > 8192 or rgba.len != @as(usize, image_w) * image_h * 4) return error.InvalidImage;
+        const texture = try self.device.createTexture(.{ .format = .r8g8b8a8_unorm, .usage = .{ .sampler = true }, .width = image_w, .height = image_h });
+        errdefer self.device.releaseTexture(texture);
+        const transfer = try self.device.createTransferBuffer(.{ .usage = .upload, .size = @intCast(rgba.len) });
+        errdefer self.device.releaseTransferBuffer(transfer);
+        const mapped = try self.device.mapTransferBuffer(transfer, false);
+        @memcpy(mapped[0..rgba.len], rgba);
+        self.device.unmapTransferBuffer(transfer);
+        // Reuse a released slot when there is one.
+        var id: ImageId = @intCast(self.images.items.len);
+        for (self.images.items, 0..) |img, i| if (img.texture == null) {
+            id = @intCast(i);
+            break;
+        };
+        const entry: GpuImage = .{ .texture = texture, .width = image_w, .height = image_h };
+        if (id == self.images.items.len) try self.images.append(self.allocator, entry) else self.images.items[id] = entry;
+        try self.pending_uploads.append(self.allocator, .{ .id = id, .transfer = transfer });
+        return id;
+    }
+    pub fn destroyImage(self: *Renderer, id: ImageId) void {
+        if (id >= self.images.items.len) return;
+        // Uploads still queued for this slot are dropped with it.
+        var i: usize = 0;
+        while (i < self.pending_uploads.items.len) {
+            if (self.pending_uploads.items[i].id == id) {
+                self.device.releaseTransferBuffer(self.pending_uploads.swapRemove(i).transfer);
+            } else i += 1;
+        }
+        if (self.images.items[id].texture) |tex| self.device.releaseTexture(tex);
+        self.images.items[id].texture = null;
+    }
+    /// Draws image `id` scaled into (x, y, w, h); `alpha` scales opacity.
+    pub fn drawImage(self: *Renderer, id: ImageId, x: f32, y: f32, w: f32, h: f32, alpha: u8) !void {
+        if (id >= self.images.items.len or self.images.items[id].texture == null) return;
+        const last = &self.batches.items[self.batches.items.len - 1];
+        if (last.image != id) {
+            if (last.image == null or last.start == self.count) {
+                // An image-free (or empty) batch can adopt this image.
+                last.image = id;
+            } else try self.batches.append(self.allocator, .{ .start = @intCast(self.count), .image = id });
+        }
+        try self.quad(x, y, w, h, 4, 0, 1, 1, .{ 255, 255, 255, alpha });
+    }
+
     /// Monochrome SVG larger than an icon cell (up to 64px, e.g. the onboarding logo).
     /// The mask is rasterized once at device density and stored as four 32px tiles in
     /// ordinary icon slots, so allocation and eviction are shared with `icon`.
@@ -605,6 +677,12 @@ pub const Renderer = struct {
             self.color_dirty = false;
         }
         if (self.count > 0) copy.uploadToBuffer(.{ .transfer_buffer = self.transfer, .offset = vertex_offset }, .{ .buffer = self.vertices, .offset = 0, .size = @intCast(bytes.len) }, true);
+        for (self.pending_uploads.items) |u| {
+            const img = self.images.items[u.id];
+            if (img.texture) |tex| copy.uploadToTexture(.{ .transfer_buffer = u.transfer, .offset = 0, .pixels_per_row = img.width, .rows_per_layer = img.height }, .{ .texture = tex, .width = img.width, .height = img.height, .depth = 1 }, false);
+            self.device.releaseTransferBuffer(u.transfer);
+        }
+        self.pending_uploads.clearRetainingCapacity();
         copy.end();
 
         const uw: u32 = @intFromFloat(@round(self.w * self.scale));
@@ -625,8 +703,13 @@ pub const Renderer = struct {
         const pass = cmd.beginRenderPass(&targets, null);
         pass.bindGraphicsPipeline(self.pipeline);
         pass.bindVertexBuffers(0, &.{.{ .buffer = self.vertices, .offset = 0 }});
-        pass.bindFragmentSamplers(0, &.{ .{ .texture = self.atlas, .sampler = self.sampler }, .{ .texture = self.color_atlas, .sampler = self.sampler } });
-        if (self.count > 0) pass.drawPrimitives(@intCast(self.count), 1, 0, 0);
+        for (self.batches.items, 0..) |batch, i| {
+            const end_vertex: u32 = if (i + 1 < self.batches.items.len) self.batches.items[i + 1].start else @intCast(self.count);
+            if (end_vertex <= batch.start) continue;
+            const image_tex = if (batch.image) |id| (self.images.items[id].texture orelse self.no_image) else self.no_image;
+            pass.bindFragmentSamplers(0, &.{ .{ .texture = self.atlas, .sampler = self.sampler }, .{ .texture = self.color_atlas, .sampler = self.sampler }, .{ .texture = image_tex, .sampler = self.image_sampler } });
+            pass.drawPrimitives(end_vertex - batch.start, 1, batch.start, 0);
+        }
         if (self.radius > 0) {
             const params = [4]f32{ @floatFromInt(uw), @floatFromInt(uh), self.radius * self.scale, 0 };
             cmd.pushFragmentUniformData(0, std.mem.asBytes(&params));

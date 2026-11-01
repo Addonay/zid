@@ -34,6 +34,11 @@ pub const Account = struct {
     name_len: usize = 0,
     avatar: [512]u8 = undefined,
     avatar_len: usize = 0,
+    /// Decoded, circle-masked 64x64 avatar (straight RGBA) waiting for upload; the UI
+    /// thread turns it into `avatar_texture`.
+    avatar_pixels: ?[]u8 = null,
+    avatar_ready: std.atomic.Value(bool) = .init(false),
+    avatar_texture: ?@import("../gfx/renderer.zig").ImageId = null,
     error_text: [160]u8 = undefined,
     error_len: usize = 0,
     thread: ?std.Thread = null,
@@ -67,6 +72,8 @@ pub const Account = struct {
     /// `client::SignOut`: forget the stored credentials.
     pub fn signOut(self: *Account, app: *App) !void {
         self.join();
+        if (self.avatar_texture) |id| app.renderer.destroyImage(id);
+        self.avatar_texture = null;
         const path = try std.fs.path.join(app.gpa, &.{ app.data_dir, "zed_credentials" });
         defer app.gpa.free(path);
         std.Io.Dir.cwd().deleteFile(app.io, path) catch |err| if (err != error.FileNotFound) return err;
@@ -89,6 +96,13 @@ pub const Account = struct {
             defer app.gpa.free(url);
             sdl.openURL(url) catch |err| app.notice("Open browser: {s}", .{@errorName(err)});
         }
+        if (self.avatar_ready.swap(false, .acq_rel)) if (self.avatar_pixels) |pixels| {
+            if (self.avatar_texture) |id| app.renderer.destroyImage(id);
+            self.avatar_texture = app.renderer.createImage(pixels, avatar_px, avatar_px) catch null;
+            std.heap.page_allocator.free(pixels);
+            self.avatar_pixels = null;
+            app.redraw_requested = true;
+        };
         if (self.status.load(.acquire) == .failed) {
             app.notice("Sign in failed: {s}", .{self.error_text[0..self.error_len]});
             self.status.store(.signed_out, .release);
@@ -127,6 +141,7 @@ fn worker(self: *Account, gpa: std.mem.Allocator, io: std.Io, data_dir: []const 
     };
     if (mode == .browser) auth.saveCredentials(arena, io, data_dir, credentials) catch |err| log.warn("credentials not saved: {s}", .{@errorName(err)});
     self.status.store(.signed_in, .release);
+    fetchAvatar(self, arena, gpa, io) catch |err| log.info("avatar unavailable: {s}", .{@errorName(err)});
 }
 
 fn copyInto(buf: []u8, len: *usize, value: []const u8) void {
@@ -159,3 +174,33 @@ fn fetchUser(self: *Account, arena: std.mem.Allocator, gpa: std.mem.Allocator, i
     if (u.get("avatar_url")) |v| if (v == .string) copyInto(&self.avatar, &self.avatar_len, v.string);
 }
 
+
+const avatar_px = 64;
+/// Downloads the GitHub avatar (`s=` asks GitHub for a 64px image), decodes it with the
+/// pure-Zig decoders, resizes it and masks it to a circle like Zed's `Avatar`.
+fn fetchAvatar(self: *Account, arena: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io) !void {
+    const base = self.avatar[0..self.avatar_len];
+    if (base.len == 0) return;
+    const url = try std.fmt.allocPrint(arena, "{s}{s}s={d}", .{ base, if (std.mem.indexOfScalar(u8, base, '?') != null) "&" else "?", avatar_px });
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var body: std.Io.Writer.Allocating = .init(arena);
+    const result = try client.fetch(.{ .location = .{ .url = url }, .response_writer = &body.writer });
+    if (result.status != .ok) return error.AvatarDownloadFailed;
+    var decoded = try zid.image.decode(gpa, body.written());
+    defer decoded.deinit();
+    var small = try zid.image.resize(gpa, decoded, avatar_px, avatar_px);
+    defer small.deinit();
+    // Anti-aliased circular mask.
+    const r: f32 = avatar_px / 2;
+    for (0..avatar_px) |y| for (0..avatar_px) |x| {
+        const dx = @as(f32, @floatFromInt(x)) + 0.5 - r;
+        const dy = @as(f32, @floatFromInt(y)) + 0.5 - r;
+        const coverage = std.math.clamp(r - @sqrt(dx * dx + dy * dy) + 0.5, 0, 1);
+        const a = &small.pixels[(y * avatar_px + x) * 4 + 3];
+        a.* = @intFromFloat(@round(@as(f32, @floatFromInt(a.*)) * coverage));
+    };
+    const pixels = try std.heap.page_allocator.dupe(u8, small.pixels);
+    self.avatar_pixels = pixels;
+    self.avatar_ready.store(true, .release);
+}

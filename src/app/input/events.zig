@@ -102,6 +102,7 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
             self.mouse_x = motion.x;
             self.mouse_y = motion.y;
             @import("../views/context_menu.zig").hover(self, motion.x, motion.y);
+            modals.hoverModal(self, motion.x, motion.y);
             // Hovering another name while an application menu is open switches menus.
             const title_bar = @import("../views/title_bar.zig");
             if (title_bar.appMenuOpen(self)) |open| if (title_bar.menuNameAt(self, motion.x, motion.y)) |index| {
@@ -141,6 +142,8 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
                 modals.scrollKeymap(self, -wheel.scroll_y);
             } else if (onboarding.isActive(self)) {
                 try onboarding.scroll(self, -wheel.scroll_y * 40);
+            } else if (doc != null and doc.?.image) {
+                try @import("../views/image_view.zig").scroll(self, doc.?, wheel.scroll_x, wheel.scroll_y, mx, my, ctrlHeld());
             } else {
                 const active = doc orelse return;
                 if (active.large) |*large| {
@@ -292,6 +295,7 @@ pub fn simulate(self: *App, spec: []const u8) !void {
             self.mouse_y = y;
             if (right) try @import("../menus.zig").rightClick(self, x, y) else {
                 @import("../views/context_menu.zig").hover(self, x, y);
+                modals.hoverModal(self, x, y);
                 const title_bar = @import("../views/title_bar.zig");
                 if (title_bar.appMenuOpen(self)) |open| if (title_bar.menuNameAt(self, x, y)) |index| {
                     if (index != open) title_bar.openAppMenu(self, index);

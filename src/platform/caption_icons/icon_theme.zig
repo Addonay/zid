@@ -27,7 +27,7 @@ pub fn desktop(a: std.mem.Allocator, io: Io, home: []const u8) Desktop {
     d.icon_theme = gsetting(a, io, "icon-theme") orelse "";
     d.gtk_theme = gsetting(a, io, "gtk-theme") orelse "";
     if (d.icon_theme.len == 0 or d.gtk_theme.len == 0) {
-        const path = std.fs.path.join(a, &.{ home, ".config/gtk-3.0/settings.ini" }) catch return d;
+        const path = std.fs.path.join(a, &.{ home, ".config/gtk-4.0/settings.ini" }) catch return d;
         const ini = Io.Dir.cwd().readFileAlloc(io, path, a, .limited(64 << 10)) catch return d;
         var lines = std.mem.tokenizeScalar(u8, ini, '\n');
         while (lines.next()) |line| {

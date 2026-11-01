@@ -22,6 +22,9 @@ pub const Document = struct {
     /// Temporary M1 rendering boundary, until windowed long-line layout lands.
     /// Keep such files inspectable without allowing edits to invisible bytes.
     preview_only: bool = false,
+    /// The file is a raster image (sniffed by content); the app shows an image viewer
+    /// and the empty text buffer is never edited (Zed opens images as `ImageView`).
+    image: bool = false,
     disk_identity: ?DiskIdentity = null,
     large: ?LargeState = null,
 
@@ -336,6 +339,7 @@ pub const Document = struct {
     }
     fn applyEdit(self: *Document, start: usize, end: usize, text: []const u8, typing: bool) !void {
         if (self.large != null) return error.ReadOnlyLargeFile;
+        if (self.image) return error.ImageIsNotEditable;
         if (self.preview_only) return error.ReadOnlyLongLinePreview;
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
         if (std.mem.indexOfScalar(u8, text, 0) != null) return error.BinaryFile;

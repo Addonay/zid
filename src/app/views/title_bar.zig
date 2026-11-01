@@ -37,9 +37,10 @@ pub fn openAppMenu(self: *App, index: usize) void {
     menuNameRects(self, &rects);
     @import("context_menu.zig").open(self, menus.appMenu(self, index, rects[index].x, 33));
 }
-/// Signed-in user picture. The avatar image is not downloaded yet: a circle with the
-/// login's first letter stands in, sized like Zed's title-bar `Avatar` (16px).
+/// Signed-in user picture (Zed `Avatar`, 16px): the downloaded GitHub avatar, or the
+/// login's initial in a circle until it arrives.
 fn drawAvatar(self: *App, login: []const u8, x: f32, y: f32) !void {
+    if (self.account.avatar_texture) |id| return self.renderer.drawImage(id, x, y, 16, 16, 255);
     const t = self.settings.theme;
     try self.renderer.roundRect(x, y, 16, 16, 8, t.element_selected);
     var initial: [1]u8 = .{if (login.len > 0) std.ascii.toUpper(login[0]) else '?'};

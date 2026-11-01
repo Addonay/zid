@@ -57,3 +57,9 @@ pub const rsa = @import("core/rsa.zig");
 test {
     _ = rsa;
 }
+
+/// Pure-Zig image decoding (PNG, JPEG, GIF, BMP).
+pub const image = @import("image/image.zig");
+test {
+    _ = image;
+}

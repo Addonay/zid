@@ -6,6 +6,7 @@ application file. Planned directories are introduced when they contain real code
 
 | Directory | Owns | May depend on |
 | --- | --- | --- |
+| `image/` | PNG, JPEG (baseline/progressive), GIF and BMP decoders, resize | Zig standard library |
 | `core/` | logging, jobs, mailbox, IDs, cancellation, configuration primitives, RSA (`rsa.zig`, zed.dev sign-in) | Zig standard library |
 | `sum_tree/` | Port of Zed's `sum_tree`: persistent refcounted B+ tree, cursors, keyed edits | standard library |
 | `rope/` | Port of Zed's `rope`: chunked UTF-8 text over `sum_tree` with offset/point/UTF-16 dimensions | sum_tree, standard library |

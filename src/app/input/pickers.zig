@@ -45,6 +45,9 @@ pub const Picker = struct {
     input: LineInput = .{},
     selected: usize = 0,
     scroll: usize = 0,
+    /// Scroll to keep `selected` visible on the next draw (keyboard moves, new
+    /// queries); hover and the wheel leave the scroll position alone.
+    follow: bool = true,
     entries: std.ArrayList(Entry) = .empty,
 
     pub fn deinit(self: *Picker, gpa: std.mem.Allocator) void {
@@ -134,7 +137,8 @@ pub fn refilter(app: *App, picker: *Picker) !void {
         if (picker.kind == .recent_projects and app.isCurrentProject(i)) continue;
         const text = candidateText(app, picker.kind, i, &buf);
         if (query.len == 0) {
-            if (picker.entries.items.len >= max_results and picker.kind == .file_finder) break;
+            // Zed's file finder lists only history until something is typed.
+            if (picker.kind == .file_finder) break;
             try picker.entries.append(gpa, .{ .index = i, .score = 0, .match = .{ .score = 0 } });
             continue;
         }
@@ -150,11 +154,35 @@ pub fn refilter(app: *App, picker: *Picker) !void {
         }.better);
         if (picker.entries.items.len > max_results) picker.entries.shrinkRetainingCapacity(max_results);
     } else if (picker.kind == .file_finder) {
-        // Empty query: open files first, like Zed's history section.
-        try promoteOpenFiles(app, picker);
+        try historyEntries(app, picker);
     }
-    picker.selected = if (picker.kind == .tab_switcher and query.len == 0 and picker.entries.items.len > 1) 1 else 0;
+    // The tab switcher and a file finder whose first history item is the open file
+    // start on the second entry, as Zed does.
+    const skip_current = query.len == 0 and picker.entries.items.len > 1 and (picker.kind == .tab_switcher or (picker.kind == .file_finder and isActiveFile(app, picker.entries.items[0].index)));
+    picker.selected = if (skip_current) 1 else 0;
     picker.scroll = 0;
+    picker.follow = true;
+}
+
+fn isActiveFile(app: *App, file_index: usize) bool {
+    const doc = app.workspace.currentOrNull() orelse return false;
+    const path = doc.path orelse return false;
+    const rel = relativeToRoot(app.workspace.root, path) orelse return false;
+    return std.mem.eql(u8, rel, app.workspace.files.items[file_index]);
+}
+/// Is `file_index` in the recently-opened history (for the history icon)?
+pub fn inHistory(app: *App, file_index: usize) bool {
+    for (app.file_history.items) |rel| if (std.mem.eql(u8, rel, app.workspace.files.items[file_index])) return true;
+    return false;
+}
+/// Empty-query file finder: recently opened project files, most recent first.
+fn historyEntries(app: *App, picker: *Picker) !void {
+    for (app.file_history.items) |rel| {
+        for (app.workspace.files.items, 0..) |file, fi| if (std.mem.eql(u8, file, rel)) {
+            try picker.entries.append(app.gpa, .{ .index = fi, .score = 0, .match = .{ .score = 0 } });
+            break;
+        };
+    }
 }
 
 fn promoteOpenFiles(app: *App, picker: *Picker) !void {

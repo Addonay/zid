@@ -15,7 +15,7 @@ const App = @import("../app.zig").App;
 const Rect = @import("../layout.zig").Rect;
 const icons = @import("icons");
 
-pub const Item = enum { project_panel, search, lsp, diagnostics, cursor, language, terminal, debugger, git_panel, collab_panel, outline_panel };
+pub const Item = enum { project_panel, search, lsp, diagnostics, cursor, language, image_info, terminal, debugger, git_panel, collab_panel, outline_panel };
 pub const Hit = struct { item: Item, x: f32, w: f32 };
 const button: f32 = 22;
 const gap: f32 = 4;
@@ -49,7 +49,8 @@ fn diagnosticsWidth(self: *App) f32 {
 fn activeDocument(self: *App) ?*zid.Document {
     // Non-editor items (onboarding, keymap editor) have no cursor or language.
     if (self.keymap_editor_open or @import("onboarding.zig").isActive(self)) return null;
-    return self.workspace.currentOrNull();
+    const doc = self.workspace.currentOrNull() orelse return null;
+    return if (doc.image) null else doc;
 }
 fn cursorText(self: *App, buf: []u8) ?[]const u8 {
     const doc = activeDocument(self) orelse return null;
@@ -59,6 +60,13 @@ fn cursorText(self: *App, buf: []u8) ?[]const u8 {
     }
     const row = doc.lineOf(doc.cursor);
     return std.fmt.bufPrint(buf, "{d}:{d}", .{ row + 1, doc.cursor - doc.lineStart(row) + 1 }) catch null;
+}
+var image_info_buf: [128]u8 = undefined;
+fn imageInfo(self: *App) ?[]const u8 {
+    if (self.keymap_editor_open or @import("onboarding.zig").isActive(self)) return null;
+    const doc = self.workspace.currentOrNull() orelse return null;
+    if (!doc.image) return null;
+    return @import("image_view.zig").info(self, doc, &image_info_buf);
 }
 fn languageText(self: *App) ?[]const u8 {
     const doc = activeDocument(self) orelse return null;
@@ -92,6 +100,14 @@ pub fn items(self: *App, status: Rect, out: *[max_items]Hit) []Hit {
         if (item == .project_panel and !project_right) continue;
         right -= button;
         out[n] = .{ .item = item, .x = right, .w = button };
+        n += 1;
+        right -= gap;
+    }
+    // Zed's `ImageInfo` item for image documents.
+    if (imageInfo(self)) |label| {
+        const w = self.renderer.widthSmall(label) + label_pad * 2;
+        right -= w;
+        out[n] = .{ .item = .image_info, .x = right, .w = w };
         n += 1;
         right -= gap;
     }
@@ -133,6 +149,7 @@ pub fn click(self: *App, item: Item) !void {
         },
         .diagnostics => self.notice("Project diagnostics view is not implemented yet", .{}),
         .language => self.notice("Language selector is not implemented yet", .{}),
+        .image_info => {},
         .terminal => self.notice("Terminal panel is not implemented yet (milestone M5)", .{}),
         .debugger => self.notice("Debugger panel is not implemented yet", .{}),
         .git_panel => self.notice("Git panel is not implemented yet (milestone M6)", .{}),
@@ -150,6 +167,7 @@ fn tipFor(item: Item) struct { []const u8, []const u8 } {
         .diagnostics => .{ "Project Diagnostics", "diagnostics::Deploy" },
         .cursor => .{ "Go to Line/Column", "go_to_line::Toggle" },
         .language => .{ "Select Language", "language_selector::Toggle" },
+        .image_info => .{ "Image Info", "" },
         .terminal => .{ "Terminal Panel", "terminal_panel::Toggle" },
         .debugger => .{ "Debug Panel", "debug_panel::ToggleFocus" },
         .git_panel => .{ "Git Panel", "git_panel::ToggleFocus" },
@@ -168,7 +186,7 @@ fn iconFor(item: Item) []const u8 {
         .git_panel => "ui:git_branch",
         .collab_panel => "ui:user_group",
         .outline_panel => "ui:list_tree",
-        .diagnostics, .cursor, .language => unreachable,
+        .diagnostics, .cursor, .language, .image_info => unreachable,
     };
 }
 
@@ -220,6 +238,10 @@ pub fn draw(self: *App) !void {
             },
             .language => {
                 if (languageText(self)) |label| try self.renderer.textSmall(label, hit.x + label_pad, baseline, t.text);
+                text_end = @min(text_end, hit.x);
+            },
+            .image_info => {
+                if (imageInfo(self)) |label| try self.renderer.textSmall(label, hit.x + label_pad, baseline, t.text);
                 text_end = @min(text_end, hit.x);
             },
             else => {
