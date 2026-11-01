@@ -226,7 +226,9 @@ Not carried over (no zid counterpart): project-scope files and the `+N` file men
 
 | zed | zid | notes |
 |---|---|---|
-| `settings_ui` opens a real OS window | `zed::OpenSettings` spawns a decorated, resizable `sdl.video.Window` titled "Settings — Zid" | same GPU device claims the window; `renderer.window` is swapped per frame to present into it |
+| `settings_ui` opens a real OS window | `zed::OpenSettings` spawns a resizable `sdl.video.Window` titled "Settings — Zid" | same GPU device claims the window; `renderer.window` is swapped per frame to present into it |
+| frameless window with client-side titlebar | `.borderless` window draws a 34px strip: centered "Settings" title + X, hit-test marks it `.draggable` and the window edges `resize_*` | X is `.normal` hit-test so clicks reach `handleClick` |
+| per-window paint | settings window only redraws on `settings_dirty` (its own events, config reload, caret blink) | presenting to either window waits on its vsync; separate flags keep scroll in one window off the other's present |
 | both windows stay interactive | events are routed by `window_id` to the settings view; main-window input keeps the editor context | command `focus()` returns `.settings` only for the overlay fallback |
 | window close control | `window_close_requested` on the settings window tears it down (`releaseWindow` + `deinit`), Esc inside does the same | clicking "Edit in settings.json"/keymap closes the settings window first |
 

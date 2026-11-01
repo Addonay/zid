@@ -132,6 +132,9 @@ pub const App = struct {
     /// Settings window logical size, refreshed each frame for `dialogRect`.
     settings_w: f32 = 0,
     settings_h: f32 = 0,
+    /// Settings window needs its own frame; presenting to it waits on its
+    /// vsync, so it only redraws on settings-routed input or shared state.
+    settings_dirty: bool = true,
     /// Screenshot/testing override for the device pixel density.
     forced_scale: ?f32 = null,
     path_input: std.ArrayList(u8) = .empty,
@@ -305,6 +308,30 @@ pub const App = struct {
             if (title_bar.segmentAt(self, @floatFromInt(x), @floatFromInt(y)) != null) return .normal;
         };
         if (y < 34 and x > 40 and @as(f32, @floatFromInt(x)) < @as(f32, @floatFromInt(w)) - (if (userdata) |self| title_bar.controlsInset(self) else 126)) return .draggable;
+        return .normal;
+    }
+    /// Hit zones for the borderless settings window: edge resize, titlebar drag,
+    /// normal hit on the close button (top-right 38px of the 34px titlebar).
+    fn settingsHitTest(window: sdl.video.Window, point: sdl.rect.IPoint, userdata: ?*App) sdl.video.HitTestResult {
+        _ = userdata;
+        const w_usize, const h_usize = window.getSize() catch return .normal;
+        const w: i32 = @intCast(w_usize);
+        const h: i32 = @intCast(h_usize);
+        const x = point.x;
+        const y = point.y;
+        if (y < 5) {
+            if (x < 8) return .resize_top_left;
+            if (x > w - 8) return .resize_top_right;
+            return .resize_top;
+        }
+        if (y > h - 5) {
+            if (x < 8) return .resize_bottom_left;
+            if (x > w - 8) return .resize_bottom_right;
+            return .resize_bottom;
+        }
+        if (x < 5) return .resize_left;
+        if (x > w - 5) return .resize_right;
+        if (y < 34 and x < w - 38) return .draggable;
         return .normal;
     }
     pub fn notice(self: *App, comptime fmt: []const u8, args: anytype) void {
@@ -522,6 +549,7 @@ pub const App = struct {
             if (self.message_len > 0 and sdl.timer.getMillisecondsSinceInit() >= self.message_until) {
                 self.message_len = 0;
                 dirty = true;
+                self.settings_dirty = true;
             }
             if (self.lsp_dirty) {
                 dirty = true;
@@ -555,14 +583,20 @@ pub const App = struct {
                     self.config_stamp = stamp;
                     self.reloadConfig() catch |err| self.notice("Configuration: {s}; last valid settings retained", .{@errorName(err)});
                     dirty = true;
+                    self.settings_dirty = true;
                 }
             }
             if (blink and sdl.timer.getMillisecondsSinceInit() - self.last_blink >= 500) {
                 self.last_blink = sdl.timer.getMillisecondsSinceInit();
                 self.caret_visible = !self.caret_visible;
                 dirty = true;
+                self.settings_dirty = true;
             }
             if (dirty and self.running) self.draw() catch |err| self.notice("Frame failed: {s}; edits are retained", .{@errorName(err)});
+            if (self.settings_dirty) {
+                self.settings_dirty = false;
+                if (self.settings_window) |*sw| self.drawSettingsWindow(sw) catch |err| self.notice("Settings frame: {s}", .{@errorName(err)});
+            }
         }
     }
     pub fn ctrlHeld() bool {
@@ -602,12 +636,14 @@ pub const App = struct {
             self.dialog = .settings;
             return;
         }
-        const window = sdl.video.Window.init("Settings — Zid", 900, 700, .{ .resizable = true, .high_pixel_density = true }) catch return;
+        const window = sdl.video.Window.init("Settings — Zid", 900, 700, .{ .resizable = true, .borderless = true, .high_pixel_density = true }) catch return;
         self.renderer.device.claimWindow(window) catch {
             window.deinit();
             return;
         };
+        window.setHitTest(App, settingsHitTest, self) catch {};
         self.settings_window = window;
+        self.settings_dirty = true;
         self.dialog = .settings;
     }
     /// Tears down the settings window if present; also clears `.settings`.
@@ -1326,7 +1362,6 @@ pub const App = struct {
         const name = if (if (doc) |d| d.path else null) |path| std.fs.path.basename(path) else "untitled";
         const window_title = if (doc == null) std.fmt.bufPrintSentinel(&title_buffer, "{s} — Zid", .{project_name}, 0) catch "Zid" else std.fmt.bufPrintSentinel(&title_buffer, "{s}{s} — {s} — Zid", .{ if (doc.?.dirty()) @as([]const u8, "● ") else "", name, project_name }, 0) catch "Zid";
         try self.window.setTitle(window_title);
-        if (self.settings_window) |*sw| self.drawSettingsWindow(sw) catch |err| self.notice("Settings frame: {s}", .{@errorName(err)});
     }
     pub fn drawPanel(self: *App) !void {
         return project_panel.drawPanel(self);
