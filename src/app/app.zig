@@ -168,6 +168,8 @@ pub const App = struct {
     syntax_doc: usize = std.math.maxInt(usize),
     syntax_revision: u64 = std.math.maxInt(u64),
     checkpoints: std.ArrayList(u32) = .empty,
+    ts_layer: ?*syntax.ts.Layer = null,
+    ts_lang: syntax.Language = .plain,
     line: [max_line_bytes]u8 = undefined,
     expanded: [max_line_bytes * 4]u8 = undefined,
 
@@ -255,6 +257,7 @@ pub const App = struct {
         self.recent.deinit();
         self.gpa.free(self.data_dir);
         self.checkpoints.deinit(self.gpa);
+        if (self.ts_layer) |layer| layer.deinit();
         self.path_input.deinit(self.gpa);
         self.tab_hits.deinit(self.gpa);
         self.visible.deinit(self.gpa);
@@ -962,6 +965,39 @@ pub const App = struct {
         if (self.settings_document) |*document| document.deinit();
         self.settings_document = try @import("settings_document.zig").Document.load(self.gpa, self.io, self.config_root);
     }
+    /// Tree-sitter syntax layer for `doc`: (re)created when the language
+    /// changes and reparsed when the doc/revision markers are stale. The
+    /// caller updates those markers right after calling this, so the layer
+    /// stays in step with the lexer's invalidation cadence.
+    pub fn treeSitterLayer(self: *App, doc: *zid.Document, lang: syntax.Language) ?*syntax.ts.Layer {
+        if (!syntax.ts.supported(lang)) return null;
+        if (self.ts_lang != lang) {
+            if (self.ts_layer) |old| old.deinit();
+            self.ts_layer = null;
+            self.ts_lang = lang;
+        }
+        if (self.ts_layer == null) {
+            self.ts_layer = syntax.ts.Layer.init(self.gpa, lang) catch return null;
+        }
+        const layer = self.ts_layer.?;
+        if (self.syntax_doc != self.workspace.active or self.syntax_revision != doc.revision or layer.tree == null) {
+            var source = syntax.ts.Source{
+                .ctx = &doc.buffer,
+                .len = @intCast(@min(doc.buffer.len(), std.math.maxInt(u32))),
+                .read = bufferRead,
+            };
+            layer.update(&source) catch return null;
+        }
+        return layer;
+    }
+
+    fn bufferRead(ctx: *const anyopaque, offset: usize, dst: []u8) usize {
+        const buffer: *const zid.TextBuffer = @ptrCast(@alignCast(ctx));
+        const n = @min(dst.len, buffer.len() -| offset);
+        buffer.copy(offset, dst[0..n]);
+        return n;
+    }
+
     pub fn lineBytes(self: *App, doc: *zid.Document, row: usize) []const u8 {
         const start = doc.lineStart(row);
         var n = @min(max_line_bytes, doc.lineEnd(row) - start);

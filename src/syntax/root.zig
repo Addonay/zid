@@ -1,4 +1,5 @@
 const token = @import("token.zig");
+pub const ts = @import("ts_highlight.zig");
 pub const Kind = token.Kind;
 pub const Span = token.Span;
 pub const Sink = token.Sink;
@@ -23,4 +24,5 @@ test {
     _ = @import("sql.zig");
     _ = @import("json.zig");
     _ = @import("markdown.zig");
+    _ = ts;
 }

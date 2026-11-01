@@ -68,6 +68,29 @@ not by editing the upstream JSON. Details are in
 [assets/icon_themes/README.md](../assets/icon_themes/README.md). Zed Default remains the
 default icon theme.
 
+## Syntax highlighting
+
+- **tree-sitter 0.27.1**: crates.io source tarball
+  (`tree-sitter-0.27.1`, MIT), URL/hash-pinned in `build.zig.zon` and
+  compiled from `src/lib.c` + `include/` by `build.zig`. The crates tarball
+  is used instead of the GitHub tag because the upstream `build.zig` relies on
+  `b.build_root`, which Zig 0.17 removed; the crates tarball ships no
+  `build.zig`, so the package is consumed as sources only (see `depRoot` in
+  `build.zig`, which resolves `zig-pkg/<hash>/<top-dir>` without evaluating
+  dependency build scripts).
+- **Grammars** (GitHub tag tarballs, URL/hash-pinned, each MIT):
+  tree-sitter-zig 1.1.2 (`tree-sitter-grammars`), tree-sitter-c 0.24.2,
+  tree-sitter-cpp 0.23.4, tree-sitter-python 0.25.0, tree-sitter-json 0.24.8
+  (all `tree-sitter`/`tree-sitter-grammars`), and tree-sitter-markdown 0.5.4
+  (`tree-sitter-grammars`; block + inline grammars). Each is compiled from
+  its generated `src/parser.c`/`src/scanner.c`.
+- **Queries**: each grammar's own `queries/highlights.scm` is embedded at
+  build time into generated `ts_queries.zig`; Zed's vendored `.scm` files are
+  GPL-3.0 and are not copied.
+- **tree-sitter-sql** is intentionally absent: `DerekStride/tree-sitter-sql`
+  tags do not commit the generated `src/parser.c`, so `.sql` keeps Zid's hand
+  lexer (`src/syntax/sql.zig`).
+
 ## Keymap
 
 `assets/keymaps/zed-default-linux.json` is an unmodified copy of Zed's
