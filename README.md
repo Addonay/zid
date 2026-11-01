@@ -76,8 +76,10 @@ Files above **32 MiB** open read-only through bounded positional reads and a
 background indexing/viewport worker. No complete index is required before the
 first view. Go-to-line also accepts `b<offset>` and percentages such as `50%`.
 The viewer decodes UTF-8, tabs and CRLF; invalid/control bytes become replacement
-characters. Long displayed lines are truncated with a marker. Selection and copy
-in large-file mode are unfinished. Closing a large-file tab joins its worker and
+characters. Long displayed lines are truncated with a marker. Keyboard byte
+selections are highlighted; Copy runs asynchronously and rejects selections above
+1 MiB, NUL bytes and invalid UTF-8 (including split codepoints). Mouse selection
+and column-preserving vertical movement remain unfinished. Closing a large-file tab joins its worker and
 can wait for outstanding filesystem I/O. The roadmap's full memory/latency targets
 remain unproven.
 

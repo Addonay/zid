@@ -60,3 +60,9 @@ selected the entire sparse 10 GiB fixture and issued Copy (`--keys ctrl-a,ctrl-c
 was 88,324 KiB; elapsed time was 0.44 s. This verifies the rejection path through
 the application without allocating the selected range. It does not verify a
 successful desktop clipboard round trip.
+
+The successful SDL clipboard path was also exercised in an offscreen process:
+five Shift+Right operations selected `first` from the fixture, Copy submitted the
+worker request, `frames:20` pumped completions, and New File/Paste produced
+`first` in the new document. This verifies the application worker-to-SDL-to-editor
+round trip. Clipboard exchange with another desktop application remains untested.
