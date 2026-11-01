@@ -5,7 +5,11 @@ pub const commands = @import("editor/commands.zig");
 pub const search = @import("editor/search.zig");
 pub const find = @import("editor/find.zig");
 pub const Workspace = @import("editor/workspace.zig").Workspace;
+pub const git = @import("git/root.zig");
+pub const database = @import("database/root.zig");
 test {
+    _ = git;
+    _ = database;
     _ = @import("editor/text_buffer.zig");
     _ = @import("editor/document.zig");
     _ = @import("editor/commands.zig");
