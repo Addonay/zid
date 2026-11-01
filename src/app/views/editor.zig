@@ -9,7 +9,7 @@ const syntax = zid.syntax;
 const max_line_bytes = 64 * 1024;
 pub fn drawEditor(self: *App) !void {
     const doc = self.workspace.current();
-    const e = try self.layout.rect(self.layout.editor);
+    const e = try self.editorRect();
     const t = self.settings.theme;
     try self.fill(e, t.editor);
     if (doc.large != null) return drawLarge(self);
@@ -71,7 +71,7 @@ pub fn drawEditor(self: *App) !void {
 fn drawLarge(self: *App) !void {
     const doc = self.workspace.current();
     const large = &self.workspace.current().large.?;
-    const e = try self.layout.rect(self.layout.editor);
+    const e = try self.editorRect();
     const t = self.settings.theme;
     self.clip(e);
     defer self.renderer.setClip(null);
@@ -171,11 +171,11 @@ pub fn drawRun(self: *App, bytes: []const u8, start: usize, end: usize, x: f32, 
 
 pub fn drawCaret(self: *App) !void {
     if (self.workspace.current().large != null) return;
-    if (!self.focused or !self.caret_visible or self.panel_focus or self.dialog != .none) return;
+    if (!self.focused or !self.caret_visible or self.panel_focus or self.search_focused or self.dialog != .none) return;
     const doc = self.workspace.current();
     const row = doc.lineOf(doc.cursor);
     if (row < doc.scroll_line or row >= doc.scroll_line + self.pageLines() + 1) return;
-    const e = try self.layout.rect(self.layout.editor);
+    const e = try self.editorRect();
     const bytes = self.lineBytes(doc, row);
     const offset = @min(bytes.len, doc.cursor - doc.lineStart(row));
     const y = e.y + 8 + @as(f32, @floatFromInt(row - doc.scroll_line)) * @as(f32, @floatFromInt(self.settings.line_height));

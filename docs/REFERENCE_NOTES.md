@@ -36,7 +36,7 @@ maps, collaboration/history model and B+ tree have not been copied or declared
 implemented. Future LSP, terminal, diff, database and notebook work must start with
 a fresh source check in the relevant reference crates and a bounded design note.
 
-### Buffer search integration contract (inspected 2026-11-01; UI pending)
+### Buffer search integration (inspected 2026-11-01)
 
 `crates/search/src/buffer_search.rs` keeps the active query, options and current
 match distinct from editor text. `select_match` moves through results and honors
@@ -46,14 +46,12 @@ The bundled Linux keymap uses `buffer_search::Deploy` (Ctrl+F),
 `search::SelectPreviousMatch` (Shift+Enter/Shift+F3), and
 `buffer_search::Dismiss` (Escape in the search context).
 
-Adopt these action names and focus behavior for Zid's upcoming in-buffer bar.
-Keep pattern input separate from editor selection; closing search restores editor
-focus. Initial search is literal with an explicit ASCII-only case toggle, matching
-`editor/search.zig`; regex and full Unicode folding must not be implied by controls.
-Enumerate bounded batches rather than retaining every result for dense files.
-Replacement should validate the active range against the current document
-revision and use a document transaction so undo remains coherent. This contract
-records the intended integration, not a delivered find/replace UI.
+Zid adopts the search action names and separate input focus. Closing the bar retains
+the query and restores editor focus. Search is exact-case literal UTF-8; regex, case
+toggles and replacement are not implemented. Counts scan bounded batches without a
+match array, capped at 9,999. Synchronous search is limited to memory-backed
+documents of at most 32 MiB; file-backed large mode reports that search is unavailable.
+Replacement remains future work and must validate the active range and revision.
 
 The reference `crates/editor/src/scroll.rs` derives a display position from a scroll
 anchor and snapshot. Zid's provisional large-file byte viewer keeps its byte offset

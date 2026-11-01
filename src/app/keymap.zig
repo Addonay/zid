@@ -58,16 +58,20 @@ pub const Keystroke = struct {
 /// Human-readable key names used by the keymap UI.
 pub fn displayKey(key: []const u8) []const u8 {
     const names = [_][2][]const u8{
-        .{ "enter", "Enter" },       .{ "escape", "Esc" },      .{ "backspace", "Backspace" }, .{ "delete", "Delete" },
-        .{ "tab", "Tab" },           .{ "space", "Space" },     .{ "up", "Up" },               .{ "down", "Down" },
-        .{ "left", "Left" },         .{ "right", "Right" },     .{ "home", "Home" },           .{ "end", "End" },
-        .{ "pageup", "PageUp" },     .{ "pagedown", "PageDown" }, .{ "insert", "Insert" },      .{ "menu", "Menu" },
-        .{ "a", "A" }, .{ "b", "B" }, .{ "c", "C" }, .{ "d", "D" }, .{ "e", "E" }, .{ "f", "F" }, .{ "g", "G" }, .{ "h", "H" },
-        .{ "i", "I" }, .{ "j", "J" }, .{ "k", "K" }, .{ "l", "L" }, .{ "m", "M" }, .{ "n", "N" }, .{ "o", "O" }, .{ "p", "P" },
-        .{ "q", "Q" }, .{ "r", "R" }, .{ "s", "S" }, .{ "t", "T" }, .{ "u", "U" }, .{ "v", "V" }, .{ "w", "W" }, .{ "x", "X" },
-        .{ "y", "Y" }, .{ "z", "Z" },
-        .{ "f1", "F1" }, .{ "f2", "F2" }, .{ "f3", "F3" }, .{ "f4", "F4" }, .{ "f5", "F5" }, .{ "f6", "F6" },
-        .{ "f7", "F7" }, .{ "f8", "F8" }, .{ "f9", "F9" }, .{ "f10", "F10" }, .{ "f11", "F11" }, .{ "f12", "F12" },
+        .{ "enter", "Enter" },   .{ "escape", "Esc" },        .{ "backspace", "Backspace" }, .{ "delete", "Delete" },
+        .{ "tab", "Tab" },       .{ "space", "Space" },       .{ "up", "Up" },               .{ "down", "Down" },
+        .{ "left", "Left" },     .{ "right", "Right" },       .{ "home", "Home" },           .{ "end", "End" },
+        .{ "pageup", "PageUp" }, .{ "pagedown", "PageDown" }, .{ "insert", "Insert" },       .{ "menu", "Menu" },
+        .{ "a", "A" },           .{ "b", "B" },               .{ "c", "C" },                 .{ "d", "D" },
+        .{ "e", "E" },           .{ "f", "F" },               .{ "g", "G" },                 .{ "h", "H" },
+        .{ "i", "I" },           .{ "j", "J" },               .{ "k", "K" },                 .{ "l", "L" },
+        .{ "m", "M" },           .{ "n", "N" },               .{ "o", "O" },                 .{ "p", "P" },
+        .{ "q", "Q" },           .{ "r", "R" },               .{ "s", "S" },                 .{ "t", "T" },
+        .{ "u", "U" },           .{ "v", "V" },               .{ "w", "W" },                 .{ "x", "X" },
+        .{ "y", "Y" },           .{ "z", "Z" },               .{ "f1", "F1" },               .{ "f2", "F2" },
+        .{ "f3", "F3" },         .{ "f4", "F4" },             .{ "f5", "F5" },               .{ "f6", "F6" },
+        .{ "f7", "F7" },         .{ "f8", "F8" },             .{ "f9", "F9" },               .{ "f10", "F10" },
+        .{ "f11", "F11" },       .{ "f12", "F12" },
     };
     for (names) |pair| if (std.mem.eql(u8, pair[0], key)) return pair[1];
     return key;
@@ -378,7 +382,7 @@ test "context predicates follow Zed precedence and descendant semantics" {
     const path = [_]Context{
         .{ .name = "Workspace" },
         .{ .name = "Pane" },
-        .{ .name = "Editor", .pairs = &.{.{ "mode", "full" }, .{ "extension", "zig" }} },
+        .{ .name = "Editor", .pairs = &.{ .{ "mode", "full" }, .{ "extension", "zig" } } },
     };
     try testing.expect((try Predicate.parse(a, "Editor && mode == full")).eval(&path));
     try testing.expect(!(try Predicate.parse(a, "Editor && mode == auto_height")).eval(&path));
@@ -412,4 +416,21 @@ test "the bundled Zed keymap loads and resolves by depth and order" {
     const overridden = try keymap.exact(testing.allocator, &ctrl_p, workspace_path);
     defer testing.allocator.free(overridden);
     try testing.expect(overridden[0].binding.action == null);
+}
+
+test "buffer search key bindings resolve in the single-line focus path" {
+    var map = Keymap.init(testing.allocator);
+    defer map.deinit();
+    try map.load(@import("keymap_assets").zed_default_linux, .default);
+    const path = [_]Context{ .{ .name = "Workspace" }, .{ .name = "Pane" }, .{ .name = "BufferSearchBar" }, .{ .name = "Editor", .pairs = &.{.{ "mode", "single_line" }} } };
+    for ([_][2][]const u8{ .{ "enter", "search::SelectNextMatch" }, .{ "shift-enter", "search::SelectPreviousMatch" }, .{ "escape", "buffer_search::Dismiss" } }) |pair| {
+        const key = [_]Keystroke{try Keystroke.parse(pair[0])};
+        const matches = try map.exact(testing.allocator, &key, &path);
+        defer testing.allocator.free(matches);
+        var found = false;
+        for (matches) |m| if (m.binding.action) |action| {
+            if (std.mem.eql(u8, action, pair[1])) found = true;
+        };
+        try testing.expect(found);
+    }
 }

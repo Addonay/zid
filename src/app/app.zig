@@ -50,6 +50,13 @@ pub const App = struct {
     pending: keymap.Chord = .{},
     focus_pairs: [2][2][]const u8 = undefined,
     modal: union(enum) { none, picker: pickers.Picker, go_to_line: pickers.GoToLine } = .none,
+    search_open: bool = false,
+    search_focused: bool = false,
+    search_input: LineInput = .{},
+    search_doc: usize = std.math.maxInt(usize),
+    search_revision: u64 = std.math.maxInt(u64),
+    search_count: usize = 0,
+    search_capped: bool = false,
     keymap_editor_open: bool = false,
     keymap_tab: Rect = .{},
     keymap_view: @import("views/keymap_editor.zig").State = .{},
@@ -378,7 +385,11 @@ pub const App = struct {
                     try self.revealCursor();
                 }
             },
-            .none => if (self.keymap_editor_open) try modals.refilterKeymap(self),
+            .none => if (self.keymap_editor_open) {
+                try modals.refilterKeymap(self);
+            } else if (self.search_open and self.search_focused) {
+                try self.updateSearch(true);
+            },
         }
     }
     pub fn menuCommand(self: *App, c: commands.Command) !void {
@@ -489,8 +500,47 @@ pub const App = struct {
     pub fn docPreview(self: *App) bool {
         return self.workspace.current().preview_only;
     }
+    pub fn editorRect(self: *App) !Rect {
+        var rect = try self.layout.rect(self.layout.editor);
+        if (self.search_open and !self.keymap_editor_open) {
+            rect.y += 40;
+            rect.h = @max(0, rect.h - 40);
+        }
+        return rect;
+    }
+    pub fn updateSearch(self: *App, select: bool) !void {
+        self.search_count = 0;
+        self.search_capped = false;
+        const doc = self.workspace.current();
+        self.search_doc = self.workspace.active;
+        self.search_revision = doc.revision;
+        if (doc.large != null or doc.buffer.len() > 32 * 1024 * 1024 or self.search_input.text().len == 0) return;
+        var plan = try zid.search.SearchPlan.init(self.gpa, self.search_input.text(), false);
+        defer plan.deinit();
+        if (select) {
+            const start = doc.selection().start;
+            doc.setSelection(start, start);
+            _ = try zid.find.selectMatch(doc, &plan, .next, true);
+            try self.revealCursor();
+        }
+        var scan = zid.find.Scan.init(doc);
+        while (!scan.done) {
+            if (!scan.step(doc, &plan)) break;
+        }
+        self.search_count = scan.count;
+        self.search_capped = scan.capped;
+    }
+    pub fn searchSelect(self: *App, direction: zid.find.Direction) !void {
+        const doc = self.workspace.current();
+        if (doc.large != null or doc.buffer.len() > 32 * 1024 * 1024 or self.search_input.text().len == 0) return;
+        var plan = try zid.search.SearchPlan.init(self.gpa, self.search_input.text(), false);
+        defer plan.deinit();
+        _ = try zid.find.selectMatch(doc, &plan, direction, true);
+        try self.revealCursor();
+        try self.updateSearch(false);
+    }
     pub fn pageLines(self: *App) usize {
-        const editor = self.layout.rect(self.layout.editor) catch return 20;
+        const editor = self.editorRect() catch return 20;
         return @max(1, @as(usize, @intFromFloat(@max(0, editor.h - 16) / @as(f32, @floatFromInt(self.settings.line_height)))));
     }
     pub fn keepPanelVisible(self: *App) void {
@@ -652,7 +702,7 @@ pub const App = struct {
     pub fn placeCursor(self: *App, mx: f32, my: f32, extend: bool) !void {
         const doc = self.workspace.current();
         if (doc.large != null) return;
-        const e = try self.layout.rect(self.layout.editor);
+        const e = try self.editorRect();
         const row = @min(doc.lineCount() - 1, doc.scroll_line + @as(usize, @intFromFloat(@max(0, my - e.y - 8) / @as(f32, @floatFromInt(self.settings.line_height)))));
         const line = self.lineBytes(doc, row);
         const target = mx - (e.x + 64) + doc.scroll_x;
@@ -733,6 +783,12 @@ pub const App = struct {
         }
         const editor = try self.layout.rect(self.layout.editor);
         if (editor.contains(mx, my)) {
+            if (self.search_open and my < editor.y + 40) {
+                self.search_focused = true;
+                self.panel_focus = false;
+                return;
+            }
+            self.search_focused = false;
             self.panel_focus = false;
             try self.placeCursor(mx, my, shiftHeld());
             if (clicks >= 2) {
@@ -784,6 +840,10 @@ pub const App = struct {
         try self.drawPanel();
         try self.drawTabs();
         if (self.keymap_editor_open) try modals.drawKeymapEditor(self) else try self.drawEditor();
+        if (self.search_open and !self.keymap_editor_open) {
+            if (self.search_doc != self.workspace.active or self.search_revision != self.workspace.current().revision) try self.updateSearch(false);
+            try @import("views/buffer_search.zig").draw(self);
+        }
         self.renderer.drawOverlay();
         if (!self.keymap_editor_open) try @import("views/editor.zig").drawCaret(self);
         const status = try self.layout.rect(self.layout.status);

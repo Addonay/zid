@@ -39,6 +39,11 @@ pub const Command = enum {
     @"projects::OpenRecent",
     @"tab_switcher::Toggle",
     @"project_panel::ToggleFocus",
+    @"buffer_search::Deploy",
+    @"buffer_search::Dismiss",
+    @"search::SelectNextMatch",
+    @"search::SelectPreviousMatch",
+    @"search::FocusSearch",
     // panes / tabs
     @"pane::CloseActiveItem",
     @"pane::CloseAllItems",
@@ -132,7 +137,7 @@ pub fn parse(name: []const u8) ?Command {
 }
 
 /// Where keyboard focus is; decides availability and the context path.
-pub const Focus = enum { editor, project_panel, picker, go_to_line, keymap_editor, settings, path_dialog };
+pub const Focus = enum { editor, buffer_search, project_panel, picker, go_to_line, keymap_editor, settings, path_dialog };
 
 pub fn focus(app: *const App) Focus {
     if (app.dialog == .settings) return .settings;
@@ -144,12 +149,14 @@ pub fn focus(app: *const App) Focus {
     }
     if (app.keymap_editor_open) return .keymap_editor;
     if (app.panel_focus and app.panel_open) return .project_panel;
+    if (app.search_open and app.search_focused) return .buffer_search;
     return .editor;
 }
 
 /// The single-line input that receives editor actions when a modal or view has focus.
 pub fn lineInput(app: *App) ?*LineInput {
     return switch (focus(app)) {
+        .buffer_search => &app.search_input,
         .picker => &app.modal.picker.input,
         .go_to_line => &app.modal.go_to_line.input,
         .keymap_editor => &app.keymap_view.search,
@@ -172,6 +179,14 @@ pub fn focusPath(app: *App, buf: *[6]keymap.Context, ext_buf: *[16]u8) []keymap.
             @memcpy(ext_buf[0..e.len], e);
             app.focus_pairs = .{ .{ "mode", "full" }, .{ "extension", ext_buf[0..e.len] } };
             buf[n] = .{ .name = "Editor", .pairs = &app.focus_pairs };
+            n += 1;
+        },
+        .buffer_search => {
+            buf[n] = .{ .name = "Pane" };
+            n += 1;
+            buf[n] = .{ .name = "BufferSearchBar" };
+            n += 1;
+            buf[n] = .{ .name = "Editor", .pairs = single_line };
             n += 1;
         },
         .project_panel => {
@@ -232,7 +247,7 @@ pub fn available(app: *App, c: Command) bool {
             .@"editor::MoveToBeginning", .@"editor::MoveToEnd", .@"editor::SelectToBeginning", .@"editor::SelectToEnd", .@"editor::SelectAll", .@"editor::Copy", .@"editor::Cancel", .@"editor::MoveUp", .@"editor::LineUp", .@"editor::MoveDown", .@"editor::LineDown", .@"editor::MovePageUp", .@"editor::PageUp", .@"editor::MovePageDown", .@"editor::PageDown", .@"editor::MoveToBeginningOfLine", .@"editor::SelectToBeginningOfLine", .@"editor::MoveToEndOfLine", .@"editor::SelectToEndOfLine", .@"editor::MoveLeft", .@"editor::MoveRight", .@"editor::SelectLeft", .@"editor::SelectRight" => true,
             else => false,
         },
-        .picker, .go_to_line, .keymap_editor => lineInputCommand(c),
+        .picker, .go_to_line, .keymap_editor, .buffer_search => lineInputCommand(c),
         else => false,
     };
     if (isMenu(c)) return switch (f) {
@@ -242,6 +257,9 @@ pub fn available(app: *App, c: Command) bool {
         else => false,
     };
     return switch (c) {
+        .@"buffer_search::Deploy" => f == .editor or f == .buffer_search,
+        .@"buffer_search::Dismiss", .@"search::FocusSearch" => f == .buffer_search,
+        .@"search::SelectNextMatch", .@"search::SelectPreviousMatch" => f == .editor or f == .buffer_search,
         .@"project_panel::CollapseSelectedEntry", .@"project_panel::ExpandSelectedEntry", .@"project_panel::CollapseAllEntries", .@"project_panel::Open" => f == .project_panel,
         .@"go_to_line::Toggle" => f == .editor or f == .go_to_line,
         .@"pane::ActivateItem", .@"pane::ActivateLastItem", .@"pane::ActivateNextItem", .@"pane::ActivatePreviousItem", .@"pane::CloseActiveItem", .@"pane::CloseAllItems", .@"pane::CloseCleanItems", .@"pane::CloseOtherItems" => f == .editor or f == .project_panel or f == .keymap_editor,
@@ -297,6 +315,19 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
     if (doc.large != null and c == .@"workspace::SaveAs") return error.ReadOnlyLargeFile;
     const page: i32 = @intCast(app.pageLines());
     switch (c) {
+        .@"buffer_search::Deploy", .@"search::FocusSearch" => {
+            app.search_open = true;
+            app.search_focused = true;
+            app.panel_focus = false;
+            app.search_input.selectAll();
+            try app.updateSearch(false);
+        },
+        .@"buffer_search::Dismiss" => {
+            app.search_open = false;
+            app.search_focused = false;
+        },
+        .@"search::SelectNextMatch" => try app.searchSelect(.next),
+        .@"search::SelectPreviousMatch" => try app.searchSelect(.previous),
         .@"workspace::Save" => {
             if (doc.path == null) return app.pathDialog(.save);
             try app.workspace.save(null);

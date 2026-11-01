@@ -12,7 +12,7 @@ application file. Planned directories are introduced when they contain real code
 | `syntax/` | incremental lexers, checkpoint state, later structure | text, core, standard library |
 | `project/` (planned) | file tree, watches, fuzzy search, project metadata | editor IDs, core, filesystem interface |
 | `app/` | application ownership, scheduling, configuration and action routing | headless modules, platform, gfx |
-| `app/views/` | title bar, files, tabs, editor, status, dialogs, settings, pickers (`picker_view`, `modals`), keymap editor | application view state, gfx, layout |
+| `app/views/` | title bar, files, tabs, editor, status, dialogs, settings, pickers (`picker_view`, `modals`), buffer search, keymap editor | application view state, gfx, layout |
 | `app/input/` | event translation, keymap dispatch (`events`), Zed action registry and focus contexts (`commands`), picker controllers (`pickers`) | app actions, typed SDL events |
 | `app/` (pure helpers) | `keymap` (Zed keymap parse/resolve), `fuzzy`, `line_input`, `recent_projects`, `icon_theme`, `text_match` | standard library only; tested by `test-ui` |
 | `util/` | dependency-free encoders (PNG for `--screenshot`) | standard library |
