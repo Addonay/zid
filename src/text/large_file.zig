@@ -8,6 +8,7 @@
 //! ordinary changes/replacements, not adversarial changes that restore metadata,
 //! nor races occurring between checks. Never treat this as an immutable snapshot.
 const std = @import("std");
+const scan = @import("scan.zig");
 
 pub const chunk_size: usize = 64 * 1024;
 pub const max_window: usize = chunk_size;
@@ -115,10 +116,7 @@ pub const LargeFile = struct {
             // Reserve before reading so allocation failure cannot partially commit a chunk.
             if (within + n == chunk_size) try self.chunks.ensureUnusedCapacity(self.allocator, 1);
             _ = try self.readWindow(io, self.indexed_bytes, buf[0..n]);
-            var count: u64 = 0;
-            for (buf[0..n]) |b| {
-                if (b == '\n') count += 1;
-            }
+            const count: u64 = scan.countNewlines(buf[0..n]);
             self.newline_count += count;
             self.indexed_bytes += n;
             done += n;
