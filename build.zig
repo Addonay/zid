@@ -98,6 +98,17 @@ fn treeSitterModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         .flags = &.{ "-std=c11", "-D_POSIX_C_SOURCE=200112L", "-D_DEFAULT_SOURCE" },
     });
 
+    // Zig 0.17: api.h is translated with the official translate-c package
+    // (b.addTranslateC is deprecated); tree_sitter.zig wraps the "ts_api" module.
+    const translator: @import("translate_c").Translator = .init(b.dependency("translate_c", .{}), .{
+        .name = "ts_api",
+        .c_source_file = b.addWriteFiles().add("ts_api.h", "#include <tree_sitter/api.h>\n"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translator.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ ts_root, "include" }) });
+    ts.addImport("ts_api", translator.mod);
+
     const Query = struct { name: []const u8, file: []const u8 };
     const Grammar = struct {
         dep: []const u8, // dependency name in build.zig.zon
