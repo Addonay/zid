@@ -41,3 +41,6 @@ remote milestones each get headless protocol/model tests before their views.
 
 `text/large_file.zig` provides an independent read-only, positional byte backend
 with budgeted chunk newline indexing and stale-file checks. The heap-owned `text/large_worker.zig` exclusively accesses this backend after opening. Separate read-only Document state owns the worker pointer and requests windows/lines by generation. Rendering polls bounded snapshots, retains the previous window while loading, and decodes UTF-8 with `text/large_display.zig`; invalid bytes and controls become replacement characters. Worker destruction stops and joins, so closing can still wait for an outstanding filesystem operation.
+
+Large-file logical-line and boundary scans run on the text worker in bounded windows;
+the editor submits navigation generations and consumes snapshots without filesystem I/O.

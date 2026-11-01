@@ -28,7 +28,8 @@ pub const Snapshot = struct {
     /// Terminal indexing error; FileChanged also invalidates future reads.
     index_error: ?anyerror,
 };
-const Request = union(enum) { window: u64, line: u64 };
+pub const Boundary = enum { start, end };
+const Request = union(enum) { window: u64, line: u64, relative: struct { offset: u64, lines: i64 }, boundary: struct { offset: u64, which: Boundary } };
 
 pub const Worker = struct {
     allocator: std.mem.Allocator,
@@ -74,6 +75,12 @@ pub const Worker = struct {
     /// the line is known, EOF is reached, or another request supersedes it.
     pub fn requestLine(self: *Worker, line: u64) u64 {
         return self.submit(.{ .line = line });
+    }
+    pub fn requestRelative(self: *Worker, offset: u64, lines: i64) u64 {
+        return self.submit(.{ .relative = .{ .offset = offset, .lines = lines } });
+    }
+    pub fn requestBoundary(self: *Worker, offset: u64, which: Boundary) u64 {
+        return self.submit(.{ .boundary = .{ .offset = offset, .which = which } });
     }
     fn submit(self: *Worker, req: Request) u64 {
         self.mutex.lockUncancelable(self.io);
@@ -130,6 +137,14 @@ pub const Worker = struct {
             if (req) |request| {
                 const maybe_off: ?u64 = switch (request) {
                     .window => |value| value,
+                    .relative => |value| self.relativeOffset(gen, value.offset, value.lines) catch |err| {
+                        if (err != error.Superseded) self.finishError(gen, err);
+                        continue;
+                    },
+                    .boundary => |value| self.boundaryOffset(gen, value.offset, value.which) catch |err| {
+                        if (err != error.Superseded) self.finishError(gen, err);
+                        continue;
+                    },
                     .line => |value| self.file.lineStart(self.io, value) catch |err| blk: {
                         if (err == error.IndexIncomplete and index_failed == null) {
                             // Keep the pending line request, but let one indexing chunk run.
@@ -192,6 +207,61 @@ pub const Worker = struct {
                 }
             }
         }
+    }
+    fn checkCurrent(self: *Worker, gen: u64) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stop or self.generation != gen) return error.Superseded;
+    }
+
+    // Find an LF strictly before pos, or at/after pos. Each read is bounded,
+    // and the mutex is held only for the cancellation check, never for I/O.
+    fn findLf(self: *Worker, gen: u64, pos: u64, forward: bool) !?u64 {
+        var cursor = @min(pos, self.file.size());
+        var buf: [max_window]u8 = undefined;
+        while (if (forward) cursor < self.file.size() else cursor > 0) {
+            try self.checkCurrent(gen);
+            const start = if (forward) cursor else cursor -| max_window;
+            const len: usize = @intCast(if (forward) @min(max_window, self.file.size() - cursor) else cursor - start);
+            _ = try self.file.readWindow(self.io, start, buf[0..len]);
+            try self.checkCurrent(gen);
+            if (forward) {
+                if (std.mem.indexOfScalar(u8, buf[0..len], '\n')) |i| return start + i;
+                cursor += len;
+            } else {
+                if (std.mem.lastIndexOfScalar(u8, buf[0..len], '\n')) |i| return start + i;
+                cursor = start;
+            }
+        }
+        return null;
+    }
+    fn lineStartAt(self: *Worker, gen: u64, offset: u64) !u64 {
+        return if (try self.findLf(gen, offset, false)) |lf| lf + 1 else 0;
+    }
+    fn relativeOffset(self: *Worker, gen: u64, offset: u64, lines: i64) !u64 {
+        var start = try self.lineStartAt(gen, @min(offset, self.file.size()));
+        var remaining = lines;
+        while (remaining > 0) : (remaining -= 1) {
+            const lf = (try self.findLf(gen, start, true)) orelse break;
+            start = lf + 1;
+        }
+        while (remaining < 0) : (remaining += 1) {
+            if (start == 0) break;
+            start = try self.lineStartAt(gen, start - 1);
+        }
+        return start;
+    }
+    fn boundaryOffset(self: *Worker, gen: u64, offset: u64, which: Boundary) !u64 {
+        const at = @min(offset, self.file.size());
+        if (which == .start) return self.lineStartAt(gen, at);
+        const lf = (try self.findLf(gen, at, true)) orelse return self.file.size();
+        if (lf > 0) {
+            var byte: [1]u8 = undefined;
+            _ = try self.file.readWindow(self.io, lf - 1, &byte);
+            try self.checkCurrent(gen);
+            if (byte[0] == '\r') return lf - 1;
+        }
+        return lf;
     }
     fn finishError(self: *Worker, gen: u64, err: anyerror) void {
         self.mutex.lockUncancelable(self.io);
@@ -297,4 +367,64 @@ test "index allocation stays bounded for a known file size" {
     try std.testing.expect(s.complete and s.index_error == null);
     try std.testing.expect(fixed.end_index < storage.len);
     w.destroy();
+}
+
+test "relative navigation and boundaries across LF CRLF and trailing newline" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "lines", .data = "abc\r\ndef\n\nz\n" });
+    const w = try Worker.createIn(std.testing.allocator, io, tmp.dir, "lines");
+    defer w.destroy();
+    const cases = [_]struct { offset: u64, lines: i64, expected: u64 }{
+        .{ .offset = 2, .lines = 1, .expected = 5 },
+        .{ .offset = 6, .lines = -1, .expected = 0 },
+        .{ .offset = 0, .lines = 3, .expected = 10 },
+        .{ .offset = 0, .lines = 99, .expected = 12 },
+        .{ .offset = 12, .lines = -1, .expected = 10 },
+        .{ .offset = 12, .lines = -99, .expected = 0 },
+    };
+    for (cases) |c| {
+        const gen = w.requestRelative(c.offset, c.lines);
+        awaitRequest(w, gen);
+        const snap = w.snapshot(&.{});
+        try std.testing.expectEqual(@as(?anyerror, null), snap.request_error);
+        try std.testing.expectEqual(c.expected, snap.offset);
+    }
+    for ([_]struct { offset: u64, which: Boundary, expected: u64 }{
+        .{ .offset = 2, .which = .start, .expected = 0 },
+        .{ .offset = 2, .which = .end, .expected = 3 },
+        .{ .offset = 6, .which = .end, .expected = 8 },
+        .{ .offset = 12, .which = .end, .expected = 12 },
+    }) |c| {
+        const gen = w.requestBoundary(c.offset, c.which);
+        awaitRequest(w, gen);
+        try std.testing.expectEqual(c.expected, w.snapshot(&.{}).offset);
+    }
+}
+
+test "distant unindexed long line and latest request" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile(io, "long", .{});
+    const end: u64 = 32 * 1024 * 1024;
+    try f.writePositionalAll(io, "\nlast", end);
+    f.close(io);
+    const w = try Worker.createIn(std.testing.allocator, io, tmp.dir, "long");
+    defer w.destroy();
+    var gen = w.requestRelative(end - 3, 1);
+    awaitRequest(w, gen);
+    try std.testing.expectEqual(end + 1, w.snapshot(&.{}).offset);
+    gen = w.requestRelative(end + 2, -1);
+    awaitRequest(w, gen);
+    try std.testing.expectEqual(@as(u64, 0), w.snapshot(&.{}).offset);
+    _ = w.requestBoundary(end - 1, .start);
+    _ = w.requestRelative(end - 1, 1);
+    gen = w.requestWindow(end + 1);
+    awaitRequest(w, gen);
+    const snap = w.snapshot(&.{});
+    try std.testing.expectEqual(gen, snap.generation);
+    try std.testing.expectEqual(end + 1, snap.offset);
+    try std.testing.expectEqual(@as(?anyerror, null), snap.request_error);
 }

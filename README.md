@@ -71,17 +71,24 @@ Logs include elapsed time, level and scope on stderr and in
 `$XDG_STATE_HOME/zid/zid.log` (default `~/.local/state/zid/zid.log`). The log rotates
 at startup past 4 MiB. Set `ZID_LOG=files=debug,app=info` for scoped diagnostics.
 
-The running UI still uses the existing gap-buffer document model: opening is
-limited to **32 MiB**, and files with lines over **64 KiB** are explicitly read-only
-previews with truncated displayed lines. Oversized edits are rejected before
-mutation. Scanning is synchronous and limited to **4,000 files / 12 levels**.
-The new persistent piece treap, shared snapshots and bounded positional source
-reader are independently tested; they are not yet integrated into documents.
-Multi-gigabyte opening and the roadmap's memory/latency targets are not delivered.
+Memory-backed documents use a persistent piece tree with shared undo roots.
+Files above **32 MiB** open read-only through bounded positional reads and a
+background indexing/viewport worker. No complete index is required before the
+first view. Go-to-line also accepts `b<offset>` and percentages such as `50%`.
+The viewer decodes UTF-8, tabs and CRLF; invalid/control bytes become replacement
+characters. Long displayed lines are truncated with a marker. Selection and copy
+in large-file mode are unfinished. Closing a large-file tab joins its worker and
+can wait for outstanding filesystem I/O. The roadmap's full memory/latency targets
+remain unproven.
+
+Memory-backed files with lines over **64 KiB** remain read-only previews;
+oversized edits are rejected before mutation. Project scanning is synchronous
+and limited to **4,000 files / 12 levels**. Undo groups typing by word and retains
+at most 1,000 entries; a byte budget and append-store compaction remain unfinished.
 
 Editing is UTF-8 codepoint based. Grapheme-aware movement, bidi cursor mapping,
-font fallback, full IME composition, wrapping, bounded/coalesced undo, workers,
-LSP, terminal, Git/diff, databases, notebooks and SSH remain future milestones.
+font fallback, full IME composition, wrapping, LSP, terminal, Git/diff, databases,
+notebooks and SSH remain future milestones.
 Highlighting uses incremental line lexers, not a full parser; see the lexer source
 for each language's approximations. GPU glyph/icon caches and frame geometry are
 bounded; unusual glyphs may be replaced by boxes, and dense content may be omitted

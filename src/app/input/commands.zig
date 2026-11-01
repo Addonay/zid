@@ -277,20 +277,18 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
             },
             else => {},
         }
-        const step: u64 = switch (c) {
-            .@"editor::MoveRight" => 1,
-            .@"editor::MoveDown", .@"editor::LineDown" => 120,
-            .@"editor::MovePageDown", .@"editor::PageDown" => 1200,
-            else => 0,
-        };
-        const back: u64 = switch (c) {
-            .@"editor::MoveLeft" => 1,
-            .@"editor::MoveUp", .@"editor::LineUp" => 120,
-            .@"editor::MovePageUp", .@"editor::PageUp" => 1200,
-            else => 0,
-        };
-        if (step == 0 and back == 0) return error.UnsupportedLargeFileCommand;
-        doc.largeNavigate((l.offset -| back) +| step);
+        const page: i64 = @intCast(app.pageLines());
+        switch (c) {
+            .@"editor::MoveUp", .@"editor::LineUp" => l.moveLines(-1),
+            .@"editor::MoveDown", .@"editor::LineDown" => l.moveLines(1),
+            .@"editor::MovePageUp", .@"editor::PageUp" => l.moveLines(-page),
+            .@"editor::MovePageDown", .@"editor::PageDown" => l.moveLines(page),
+            .@"editor::MoveToBeginningOfLine" => l.moveBoundary(.start),
+            .@"editor::MoveToEndOfLine" => l.moveBoundary(.end),
+            .@"editor::MoveLeft" => doc.largeNavigate(l.offset -| 1),
+            .@"editor::MoveRight" => doc.largeNavigate(l.offset +| 1),
+            else => return error.UnsupportedLargeFileCommand,
+        }
         return;
     }
     if (doc.large != null and c == .@"workspace::SaveAs") return error.ReadOnlyLargeFile;

@@ -40,3 +40,7 @@ The reference `crates/editor/src/scroll.rs` derives a display position from a sc
 anchor and snapshot. Zid's provisional large-file byte viewer keeps its byte offset
 separate from the memory-backed editor's line scroll; it does not implement Zed's
 scroll anchor or display map.
+
+Large-file navigation uses the reference distinction between logical lines and display
+positions (see `crates/editor/src/scroll.rs`); Zid resolves logical LF boundaries on
+the worker without implementing Zed display maps or column-preserving cursor motion.

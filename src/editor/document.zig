@@ -30,6 +30,7 @@ pub const Document = struct {
         requested_offset: ?u64 = null,
         generation: u64 = 0,
         line_pending: bool = false,
+        relative_pending: ?i64 = null,
         needs_redraw: bool = true,
         last_indexed: u64 = 0,
         last_loading: bool = true,
@@ -49,16 +50,31 @@ pub const Document = struct {
             self.failure = failure;
             if (!snapshot.loading and snapshot.generation == self.generation) {
                 if (snapshot.request_error == null) {
+                    if (self.offset != snapshot.offset) self.needs_redraw = true;
                     self.offset = snapshot.offset;
                     self.requested_offset = snapshot.offset;
                 }
                 self.line_pending = false;
+                self.relative_pending = null;
             }
             return snapshot;
         }
         pub fn requestLine(self: *LargeState, line: u64) void {
             self.generation = self.worker.requestLine(line);
             self.line_pending = true;
+            self.relative_pending = null;
+        }
+        pub fn moveLines(self: *LargeState, lines: i64) void {
+            if (lines == 0) return;
+            const total = (self.relative_pending orelse 0) +| lines;
+            self.generation = self.worker.requestRelative(self.offset, total);
+            self.line_pending = true;
+            self.relative_pending = total;
+        }
+        pub fn moveBoundary(self: *LargeState, which: @import("../text/large_worker.zig").Boundary) void {
+            self.generation = self.worker.requestBoundary(self.offset, which);
+            self.line_pending = true;
+            self.relative_pending = null;
         }
     };
 
@@ -125,7 +141,10 @@ pub const Document = struct {
     pub fn largeNavigate(self: *Document, offset: u64) void {
         if (self.large) |*large| {
             large.offset = @min(offset, large.size);
+            large.generation = large.worker.requestWindow(large.offset);
+            large.requested_offset = large.offset;
             large.line_pending = false;
+            large.relative_pending = null;
         }
     }
     fn validateText(text: []const u8) !void {
@@ -494,4 +513,28 @@ test "history eviction retains a valid undo floor and supports branching" {
     try expectText(&document, "xxxxxxy");
     try document.undo();
     try expectText(&document, "xxxxxx");
+}
+
+test "large state queues relative movements and resolves boundaries" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "lines", .data = "a\nb\nc\nd\n" });
+    const worker = try @import("../text/large_worker.zig").Worker.createIn(std.testing.allocator, io, tmp.dir, "lines");
+    defer worker.destroy();
+    var state: Document.LargeState = .{ .worker = worker, .size = 8 };
+    _ = state.poll(&.{});
+    state.moveLines(1);
+    state.moveLines(2);
+    worker.waitForRequest(state.generation);
+    _ = state.poll(&.{});
+    try std.testing.expectEqual(@as(u64, 6), state.offset);
+    state.moveLines(-1);
+    worker.waitForRequest(state.generation);
+    _ = state.poll(&.{});
+    try std.testing.expectEqual(@as(u64, 4), state.offset);
+    state.moveBoundary(.end);
+    worker.waitForRequest(state.generation);
+    _ = state.poll(&.{});
+    try std.testing.expectEqual(@as(u64, 5), state.offset);
 }

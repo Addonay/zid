@@ -85,8 +85,7 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
                 modals.scrollKeymap(self, -wheel.scroll_y);
             } else {
                 if (doc.large) |*large| {
-                    const amount: u64 = @intCast(@abs(delta) * 120);
-                    large.offset = if (delta < 0) large.offset -| amount else @min(large.size, large.offset +| amount);
+                    large.moveLines(delta);
                     return;
                 }
                 doc.scroll_line = @intCast(std.math.clamp(@as(i64, @intCast(doc.scroll_line)) + delta, 0, @as(i64, @intCast(doc.lineCount() -| 1))));
