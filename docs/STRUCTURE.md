@@ -14,7 +14,7 @@ application file. Planned directories are introduced when they contain real code
 | `app/` | application ownership, scheduling, configuration and action routing | headless modules, platform, gfx |
 | `app/views/` | title bar, files, tabs, editor, status, dialogs, settings, pickers (`picker_view`, `modals`), buffer search, keymap editor | application view state, gfx, layout |
 | `app/input/` | event translation, keymap dispatch (`events`), Zed action registry and focus contexts (`commands`), picker controllers (`pickers`) | app actions, typed SDL events |
-| `app/` (pure helpers) | `keymap` (Zed keymap parse/resolve), `fuzzy`, `line_input`, `recent_projects`, `icon_theme`, `text_match` | standard library only; tested by `test-ui` |
+| `app/` (pure helpers) | `keymap` (Zed keymap parse/resolve), `fuzzy`, `line_input`, `recent_projects`, `icon_theme`, `text_match`, `settings_helpers` | standard library only; tested by `test-ui` |
 | `util/` | dependency-free encoders (PNG for `--screenshot`) | standard library |
 | `app/config/` (planned) | settings, keymap and theme registry | standard library; no SDL |
 | `gfx/` | GPU pipelines, batching, clipping, glyph/icon atlas | typed zig-sdl3 GPU, font/SVG raster interfaces |

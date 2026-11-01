@@ -16,7 +16,8 @@ pub const Page = enum { general, appearance, editor, panels, keymap };
 const page_titles = [_][]const u8{ "General", "Appearance", "Editor", "Panels", "Keymap" };
 
 const Kind = enum { toggle, number, dropdown, button };
-const Id = enum { open_keymap, open_keymap_file, open_file, reload, theme, icon_theme, font_size, line_height, tab_size, cursor_blink, panel_width, auto_fold_dirs, indent_guides };
+const helpers = @import("../settings_helpers.zig");
+const Id = helpers.Id;
 
 const Item = struct { id: Id, page: Page, section: []const u8, title: []const u8, desc: []const u8, kind: Kind, button: []const u8 = "" };
 
@@ -95,10 +96,20 @@ fn query(self: *App) []const u8 {
 
 fn matches(item: Item, q: []const u8) bool {
     if (q.len == 0) return true;
-    return contains(item.title, q) or contains(item.desc, q) or contains(item.section, q) or contains(page_titles[@backingInt(item.page)], q);
+    const path: ?[]const u8 = switch (item.id) {
+        .theme => "theme_name",
+        .auto_fold_dirs => "auto_fold_dirs",
+        .open_keymap, .open_keymap_file, .open_file, .reload => null,
+        else => @tagName(item.id),
+    };
+    return @import("../settings_search.zig").score(.{
+        .title = item.title,
+        .description = item.desc,
+        .section = item.section,
+        .page = page_titles[@backingInt(item.page)],
+        .jsonpath = path,
+    }, q) != null;
 }
-
-const contains = @import("../text_match.zig").containsIgnoreCase;
 
 fn currentPage(self: *App) Page {
     return @fromBackingInt(@intCast(@min(self.settings_category, page_titles.len - 1)));
@@ -119,7 +130,10 @@ fn layout(self: *App) Layout {
             titled = true;
             if (!std.mem.eql(u8, section, item.section)) out.push(.{ .header = item.section }, header_h);
             section = item.section;
-            out.push(.{ .item = i }, item_h);
+            const width = @max(1, contentRect(dialogRect(self)).w - 2 * content_pad_x);
+            const stacked = width < controlWidth(self, item) + 180;
+            const desc_width = if (stacked) width else @max(1, width - controlWidth(self, item) - 12);
+            out.push(.{ .item = i }, helpers.height(helpers.lineCount(item.desc, desc_width, self, measureSmall), stacked));
         }
     }
     return out;
@@ -169,10 +183,13 @@ fn controlWidth(self: *App, item: Item) f32 {
         .button => self.renderer.widthUi(item.button) + 24,
     };
 }
+fn measureSmall(self: *App, text: []const u8) f32 {
+    return self.renderer.widthSmall(text);
+}
 fn controlRect(self: *App, item: Item, rr: Rect) Rect {
     const w = controlWidth(self, item);
     const h: f32 = if (item.kind == .toggle) 18 else control_h;
-    return .{ .x = rr.x + rr.w - w, .y = @round(rr.y + (rr.h - h) / 2), .w = w, .h = h };
+    return .{ .x = rr.x + rr.w - w, .y = if (rr.w < w + 180) rr.y + rr.h - h - 5 else @round(rr.y + (rr.h - h) / 2), .w = w, .h = h };
 }
 fn minusRect(ctrl: Rect) Rect {
     return .{ .x = ctrl.x + 1, .y = ctrl.y + 1, .w = 26, .h = ctrl.h - 2 };
@@ -379,7 +396,7 @@ pub fn drawSettings(self: *App) !void {
     try drawNav(self, r, &lay);
     const foot_y = r.y + r.h - nav_footer_h;
     try self.renderer.rect(r.x + 1, foot_y, sidebar_w - 1, 1, t.border_variant);
-    try keyHint(self, r.x + sidebar_pad, foot_y + 7, "Tab", "Next control");
+    try keyHint(self, r.x + sidebar_pad, foot_y + 7, "Del", "Reset focused setting");
 
     // Content.
     const c = contentRect(r);
@@ -471,16 +488,45 @@ fn keyHint(self: *App, x: f32, y: f32, key: []const u8, label: []const u8) !void
     try self.renderer.textSmall(label, x + kw + 6, y + 13, t.muted);
 }
 
+fn resetRect(self: *App, item: Item, rr: Rect) Rect {
+    return .{ .x = rr.x + self.renderer.widthUi(item.title) + 8, .y = rr.y + 8, .w = 44, .h = 22 };
+}
+fn resetValue(self: *App, id: Id) !void {
+    if (!helpers.changed(self.settings, id)) return;
+    var next = self.settings;
+    helpers.reset(&next, id);
+    if (next.font_size != self.settings.font_size) try self.renderer.setMonoSize(next.font_size);
+    if (id == .theme) next.theme = try theme_mod.Theme.builtin(self.gpa, next.theme_name);
+    self.settings = next;
+    if (next.font_size != self.saved_font_size) self.saved_font_size = next.font_size;
+    if (id == .auto_fold_dirs) try self.refreshProject();
+    try self.saveAndApplySettings();
+    if (id == .theme) try self.reloadConfig();
+}
+
 fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !void {
     const t = self.settings.theme;
     const item = items[index];
     if (focused) try self.renderer.roundRect(rr.x - 10, rr.y + 2, rr.w + 20, rr.h - 4, 6, t.ghost_element_hover);
     const ctrl = controlRect(self, item, rr);
-    // Clip the description column so narrow windows cannot paint under controls.
-    self.clip(.{ .x = rr.x, .y = rr.y, .w = @max(0, ctrl.x - rr.x - 12), .h = rr.h });
+    const stacked = rr.w < ctrl.w + 180;
+    const desc_width = if (stacked) rr.w else @max(1, ctrl.x - rr.x - 12);
+    self.clip(.{ .x = rr.x, .y = rr.y, .w = @max(0, desc_width), .h = rr.h });
     try self.renderer.textUi(item.title, rr.x, rr.y + 26, t.text);
-    try self.renderer.textSmall(item.desc, rr.x, rr.y + 44, t.muted);
+    var rest = item.desc;
+    var baseline = rr.y + 44;
+    while (rest.len > 0) {
+        const end = helpers.lineEnd(rest, desc_width, self, measureSmall);
+        try self.renderer.textSmall(rest[0..end], rr.x, baseline, t.muted);
+        rest = std.mem.trimStart(u8, rest[end..], " ");
+        baseline += 16;
+    }
     self.clip(contentRect(dialogRect(self)));
+    if (helpers.changed(self.settings, item.id)) {
+        const reset = resetRect(self, item, rr);
+        if (hovered(self, reset)) try self.renderer.roundRect(reset.x, reset.y, reset.w, reset.h, radius, t.element_hover);
+        try self.renderer.textSmall("Reset", reset.x + 3, reset.y + 15, t.accent);
+    }
     if (divider) try self.renderer.rect(rr.x, rr.y + rr.h - 1, rr.w, 1, t.border_variant);
 
     switch (item.kind) {
@@ -629,6 +675,7 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
         self.settings_editing_number = false;
         const item = items[index];
         const ctrl = controlRect(self, item, rr);
+        if (helpers.changed(self.settings, item.id) and resetRect(self, item, rr).contains(mx, my)) return resetValue(self, item.id);
         switch (item.kind) {
             .number => {
                 if (minusRect(ctrl).contains(mx, my)) try stepNumber(self, item.id, -1);
@@ -790,6 +837,10 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
                     .button => {},
                 }
             }
+        },
+        .delete => {
+            const id: ?Id = if (focused) |index| items[index].id else null;
+            if (helpers.keyboardResetTarget(self.settings, id, self.settings_focus == .controls)) |target| try resetValue(self, target);
         },
         .return_key => if (self.settings_focus == .controls) {
             if (focused) |index| {

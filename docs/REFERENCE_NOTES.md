@@ -87,7 +87,5 @@ label and muted small description with a control, and save settings as fields
 change. Zid uses those dimensions and immediate apply for its supported fields.
 Zed uses a separate settings window with independently focusable search,
 navigation and controls; Zid currently presents an in-app modal and supports
-search and control focus. At narrow widths Zid clips long descriptions instead
-of wrapping them. Zed's scope/file selector, reset indicators, full navigation
-keyboard behavior and complete setting catalog are not yet reproduced. No Zed
+search and control focus. Zid wraps descriptions using the same measured rows for drawing, scrolling and hit testing, and stacks controls when space is tight. Zed shows an undo control for settings that differ from their default (settings_ui.rs, render setting row); Zid exposes Reset and Delete for its supported values. Resetting line height also reduces font size if necessary to keep the configuration valid. Zed's scope/file selector, full navigation keyboard behavior and complete setting catalog are not yet reproduced. No Zed
 reference screenshot was available for a pixel comparison in this pass.
