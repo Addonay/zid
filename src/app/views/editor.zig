@@ -15,6 +15,8 @@ pub fn drawEditor(self: *App) !void {
     if (doc.large != null) return drawLarge(self);
     const line_height: f32 = @floatFromInt(self.settings.line_height);
     const lang = syntax.Language.fromPath(doc.path orelse "");
+    // Checked before the markers are bumped: reparses when they are stale.
+    const ts_layer = self.treeSitterLayer(doc, lang);
     if (self.syntax_doc != self.workspace.active or self.syntax_revision != doc.revision) {
         self.checkpoints.clearRetainingCapacity();
         try self.checkpoints.append(self.gpa, 0);
@@ -36,7 +38,12 @@ pub fn drawEditor(self: *App) !void {
     while (row < doc.lineCount() and row < doc.scroll_line + self.pageLines() + 1) : (row += 1) {
         const bytes = self.lineBytes(doc, row);
         var sink = syntax.Sink.init(&spans);
-        state = syntax.lexLine(lang, state, bytes, &sink);
+        if (ts_layer) |layer| {
+            const start = doc.lineStart(row);
+            layer.spansForRange(@intCast(start), @intCast(start + bytes.len), &sink);
+        } else {
+            state = syntax.lexLine(lang, state, bytes, &sink);
+        }
         if ((row + 1) % 64 == 0 and (row + 1) / 64 == self.checkpoints.items.len) try self.checkpoints.append(self.gpa, state);
         if (row < doc.scroll_line) continue;
         const y = e.y + 8 + @as(f32, @floatFromInt(row - doc.scroll_line)) * line_height;

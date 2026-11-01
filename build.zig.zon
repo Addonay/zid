@@ -9,8 +9,8 @@
             .hash = "sdl3-0.2.4-NmT1QwAfKgDaBkEDE1e-vILMFvhcxX5dIgrvbK5LfN8U",
         },
         .zafi = .{
-            .url = "git+https://github.com/Addonay/zafi#9062288c3c8cabfdf505a3d450dd56e4a2b66098",
-            .hash = "zafi-0.3.0-gvFdNhd0EgBFNiUn8-W_vwezH07CBaS9AWL0Ku0UQstV",
+            .url = "git+https://github.com/addonay/zafi.git#04086f7a21f120a5ea52f921fb2034d75e10264f",
+            .hash = "zafi-0.4.1-gvFdNm2TFABhWk0z8IvfPUm8cq1RoQ_mztSiQ5IoZyyr",
         },
         .patch = .{
             .url = "git+https://github.com/marler8997/zig-patch#c3ad78b305ba03bcd645c0bac004d1719407c6b8",
@@ -19,6 +19,37 @@
         .translate_c = .{
             .url = "git+https://codeberg.org/ziglang/translate-c?ref=2.0.2#c11030012dc325d446474d17b78c242fd1d622ec",
             .hash = "translate_c-2.0.2-Q_BUWvBNBwBgPKQJPblip6M7AHNK_IPNPmyv4rSIQMQc",
+        },
+        // crates.io ships the same v0.27.1 C sources without the repo's
+        // build.zig, which is written for an older Zig release.
+        .tree_sitter = .{
+            .url = "https://crates.io/api/v1/crates/tree-sitter/0.27.1/download",
+            .hash = "N-V-__8AALOwEQD8gktkJ8t8as2XSC9xza90-MhR-11Gu-Iq",
+        },
+        // Tree-sitter grammars, URL/hash-pinned like every other dependency.
+        .ts_c = .{
+            .url = "https://github.com/tree-sitter/tree-sitter-c/archive/refs/tags/v0.24.2.tar.gz",
+            .hash = "N-V-__8AAOptQABThDBI4GwCf-LgZGm7Xcg748c90nUOnKca",
+        },
+        .ts_cpp = .{
+            .url = "https://github.com/tree-sitter/tree-sitter-cpp/archive/refs/tags/v0.23.4.tar.gz",
+            .hash = "N-V-__8AABV0FwF6QXRpLj-XNvBVdbLulj1S6DdOHecGIRN6",
+        },
+        .ts_python = .{
+            .url = "https://github.com/tree-sitter/tree-sitter-python/archive/refs/tags/v0.25.0.tar.gz",
+            .hash = "N-V-__8AAK21PgAyqtZDvMY-shv1h4exK9GmyrMPN2-nmgeK",
+        },
+        .ts_json = .{
+            .url = "https://github.com/tree-sitter/tree-sitter-json/archive/refs/tags/v0.24.8.tar.gz",
+            .hash = "N-V-__8AACVXAgCww6FkdAaX9yu809DvLKVVo8k47eWjM83h",
+        },
+        .ts_zig = .{
+            .url = "https://github.com/tree-sitter-grammars/tree-sitter-zig/archive/refs/tags/v1.1.2.tar.gz",
+            .hash = "N-V-__8AAN6NXgDhYMQOOjMOdF4LrSrlYRxAi-r_zMjyQTzv",
+        },
+        .ts_markdown = .{
+            .url = "https://github.com/tree-sitter-grammars/tree-sitter-markdown/archive/refs/tags/v0.5.4.tar.gz",
+            .hash = "N-V-__8AAP9XVAA9ZHhciGfX4W-WE-ibduMh_2y4D64pz8vq",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "assets", "README.md", "docs", "patch", "tools" },
