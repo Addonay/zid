@@ -70,6 +70,11 @@ pub const Document = struct {
         pub fn selection(self: *const LargeState) struct { start: u64, end: u64 } {
             return .{ .start = @min(self.anchor, self.offset), .end = @max(self.anchor, self.offset) };
         }
+        /// Supersedes preview navigation and restores both byte endpoints.
+        pub fn restoreSelection(self: *LargeState, anchor: u64, offset: u64) void {
+            self.move(offset, true);
+            self.anchor = @min(anchor, self.size);
+        }
         pub fn move(self: *LargeState, offset: u64, extend: bool) void {
             self.cancelCopy();
             self.offset = @min(offset, self.size);
@@ -593,4 +598,21 @@ test "large byte selection survives window and boundary completion and invalidat
     try std.testing.expect(state.expected_copy == null);
     try std.testing.expectEqual(@as(u64, 0), state.anchor);
     try std.testing.expectEqual(@as(u64, 0), state.offset);
+}
+
+test "restoring large selection supersedes preview and survives publication" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "restore", .data = "first\nsecond\n" });
+    const worker = try @import("../text/large_worker.zig").Worker.createIn(std.testing.allocator, io, tmp.dir, "restore");
+    defer worker.destroy();
+    var state: Document.LargeState = .{ .worker = worker, .size = 13 };
+    state.move(4, true);
+    state.requestLine(1);
+    state.restoreSelection(1, 4);
+    worker.waitForRequest(state.generation);
+    _ = state.poll(&.{});
+    try std.testing.expectEqual(@as(u64, 1), state.anchor);
+    try std.testing.expectEqual(@as(u64, 4), state.offset);
 }

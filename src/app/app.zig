@@ -351,7 +351,7 @@ pub const App = struct {
         }
         self.closeModal();
         const doc = self.workspace.current();
-        self.modal = .{ .go_to_line = .{ .restore_cursor = doc.cursor, .restore_anchor = doc.anchor, .restore_scroll = doc.scroll_line, .restore_large_offset = if (doc.large) |l| l.offset else 0 } };
+        self.modal = .{ .go_to_line = .{ .restore_cursor = doc.cursor, .restore_anchor = doc.anchor, .restore_scroll = doc.scroll_line, .restore_large_offset = if (doc.large) |l| l.offset else 0, .restore_large_anchor = if (doc.large) |l| l.anchor else 0 } };
     }
     /// Called after a modal's or view's line input changed.
     pub fn lineInputChanged(self: *App) !void {
@@ -405,7 +405,7 @@ pub const App = struct {
                 if (c == .@"menu::Cancel") {
                     doc.setSelection(g.restore_anchor, g.restore_cursor);
                     doc.scroll_line = g.restore_scroll;
-                    if (doc.large != null) doc.largeNavigate(g.restore_large_offset);
+                    if (doc.large) |*large| large.restoreSelection(g.restore_large_anchor, g.restore_large_offset);
                 } else if (pickers.goToLineTarget(doc, g.input.text())) |offset| {
                     doc.move(offset, false);
                     try self.revealCursor();
