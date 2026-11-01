@@ -110,7 +110,15 @@ pub const App = struct {
     settings_query: [64]u8 = undefined,
     settings_query_len: usize = 0,
     settings_dropdown: bool = false,
-    settings_focus: enum { search, controls } = .search,
+    settings_focus: enum { search, nav, controls } = .search,
+    /// Focused visible navbar entry when `settings_focus == .nav`.
+    settings_nav_index: usize = 0,
+    /// Per-settings-page navbar expansion bitmask (one bit per Page tag).
+    settings_expanded: u32 = 0,
+    /// Item index whose settings link was last copied (check feedback).
+    settings_copied: ?usize = null,
+    /// settings.json failed to parse; the dialog shows Zed's warning banner.
+    settings_document_error: bool = false,
     settings_editing_number: bool = false,
     settings_number: [4096]u8 = undefined,
     settings_document: ?@import("settings_document.zig").Document = null,
