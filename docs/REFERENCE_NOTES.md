@@ -78,3 +78,16 @@ window, following the distinction between Zed's selection state and scroll
 anchor in `crates/editor/src/scroll.rs` and row selection painting in
 `crates/editor/src/element.rs`. Its asynchronous navigation serializes relative
 intentions; it remains byte-based and does not provide Zed's display mapping.
+
+### Settings UI (2026-11-01)
+
+Zed's `crates/settings_ui/src/settings_ui.rs` sets a 226 px navigation rail,
+10 px rail padding and 32 px horizontal item padding. Its setting rows pair a
+label and muted small description with a control, and save settings as fields
+change. Zid uses those dimensions and immediate apply for its supported fields.
+Zed uses a separate settings window with independently focusable search,
+navigation and controls; Zid currently presents an in-app modal and supports
+search and control focus. At narrow widths Zid clips long descriptions instead
+of wrapping them. Zed's scope/file selector, reset indicators, full navigation
+keyboard behavior and complete setting catalog are not yet reproduced. No Zed
+reference screenshot was available for a pixel comparison in this pass.

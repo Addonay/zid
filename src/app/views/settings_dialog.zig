@@ -85,6 +85,8 @@ pub fn open(self: *App) void {
     self.settings_row = 0;
     self.settings_scroll = 0;
     self.settings_dropdown = false;
+    self.settings_focus = .search;
+    self.settings_editing_number = false;
 }
 
 fn query(self: *App) []const u8 {
@@ -93,13 +95,13 @@ fn query(self: *App) []const u8 {
 
 fn matches(item: Item, q: []const u8) bool {
     if (q.len == 0) return true;
-    return contains(item.title, q) or contains(item.desc, q) or contains(item.section, q) or contains(page_titles[@intFromEnum(item.page)], q);
+    return contains(item.title, q) or contains(item.desc, q) or contains(item.section, q) or contains(page_titles[@backingInt(item.page)], q);
 }
 
 const contains = @import("../text_match.zig").containsIgnoreCase;
 
 fn currentPage(self: *App) Page {
-    return @enumFromInt(@min(self.settings_category, page_titles.len - 1));
+    return @fromBackingInt(@intCast(@min(self.settings_category, page_titles.len - 1)));
 }
 
 /// Content rows: the active page, or every matching item grouped by page while searching.
@@ -107,7 +109,7 @@ fn layout(self: *App) Layout {
     var out: Layout = .{};
     const q = query(self);
     for (0..page_titles.len) |p| {
-        const page: Page = @enumFromInt(p);
+        const page: Page = @fromBackingInt(@intCast(p));
         if (q.len == 0 and page != currentPage(self)) continue;
         var titled = false;
         var section: []const u8 = "";
@@ -143,8 +145,8 @@ fn focusedItem(self: *App, lay: *const Layout) ?usize {
 // ---------------------------------------------------------------- geometry
 
 pub fn dialogRect(self: *App) Rect {
-    const w = @max(480, @min(920, self.layout.width - 48));
-    const h = @max(320, @min(640, self.layout.height - 48));
+    const w = @max(1, @min(920, self.layout.width - 48));
+    const h = @max(1, @min(640, self.layout.height - 48));
     return .{ .x = @round((self.layout.width - w) / 2), .y = @round((self.layout.height - h) / 2), .w = w, .h = h };
 }
 fn contentRect(r: Rect) Rect {
@@ -196,7 +198,7 @@ fn navEntries(self: *App, r: Rect, buf: *[32]NavEntry) []NavEntry {
     const x = r.x + sidebar_pad;
     const w = sidebar_w - 2 * sidebar_pad;
     for (0..page_titles.len) |p| {
-        const page: Page = @enumFromInt(p);
+        const page: Page = @fromBackingInt(@intCast(p));
         buf[n] = .{ .page = page, .section = null, .rect = .{ .x = x, .y = y, .w = w, .h = nav_row_h } };
         n += 1;
         y += nav_row_h;
@@ -288,7 +290,7 @@ fn optionLabel(id: Id, i: usize) []const u8 {
 }
 fn selectedOption(self: *App, id: Id) usize {
     switch (id) {
-        .icon_theme => return @intFromEnum(self.settings.icon_theme),
+        .icon_theme => return @backingInt(self.settings.icon_theme),
         else => {
             for (theme_list, 0..) |item, i| if (item.id == self.settings.theme_name) return i;
             return 0;
@@ -340,7 +342,10 @@ fn activate(self: *App, index: usize) !void {
     switch (item.kind) {
         .toggle => try toggle(self, item.id),
         .button => try press(self, item.id),
-        .dropdown => self.settings_dropdown = !self.settings_dropdown,
+        .dropdown => {
+            self.settings_option = selectedOption(self, item.id);
+            self.settings_dropdown = true;
+        },
         .number => {},
     }
 }
@@ -374,7 +379,7 @@ pub fn drawSettings(self: *App) !void {
     try drawNav(self, r, &lay);
     const foot_y = r.y + r.h - nav_footer_h;
     try self.renderer.rect(r.x + 1, foot_y, sidebar_w - 1, 1, t.border_variant);
-    try keyHint(self, r.x + sidebar_pad, foot_y + 7, "Tab", "Next page");
+    try keyHint(self, r.x + sidebar_pad, foot_y + 7, "Tab", "Next control");
 
     // Content.
     const c = contentRect(r);
@@ -383,14 +388,14 @@ pub fn drawSettings(self: *App) !void {
         const rr = rowRect(self, c, row);
         if (rr.y + rr.h < c.y or rr.y > c.y + c.h) continue;
         switch (row.kind) {
-            .title => |page| try self.renderer.textUi(page_titles[@intFromEnum(page)], rr.x, rr.y + 28, t.text),
+            .title => |page| try self.renderer.textUi(page_titles[@backingInt(page)], rr.x, rr.y + 28, t.text),
             .header => |name| {
                 try self.renderer.textSmall(name, rr.x, rr.y + 26, t.muted);
                 try self.renderer.rect(rr.x, rr.y + rr.h - 6, rr.w, 1, t.border_variant);
             },
             .item => |index| {
                 const next_is_item = ri + 1 < lay.len and lay.rows[ri + 1].kind == .item;
-                try drawItem(self, rr, index, focused == index, next_is_item);
+                try drawItem(self, rr, index, self.settings_focus == .controls and focused == index, next_is_item);
             },
         }
     }
@@ -422,7 +427,7 @@ fn drawSearch(self: *App, r: Rect) !void {
         try self.renderer.textUi(q, tx, s.y + 19, t.text);
     }
     const caret_x = if (q.len == 0) tx - 2 else tx + self.renderer.widthUi(q) + 1;
-    if (self.caret_visible) try self.renderer.rect(caret_x, s.y + 6, 1, s.h - 12, t.accent);
+    if (self.settings_focus == .search and self.caret_visible) try self.renderer.rect(caret_x, s.y + 6, 1, s.h - 12, t.accent);
 }
 
 fn drawNav(self: *App, r: Rect, lay: *const Layout) !void {
@@ -443,7 +448,7 @@ fn drawNav(self: *App, r: Rect, lay: *const Layout) !void {
             const expanded = entry.page == currentPage(self) and !searching;
             const chevron = if (expanded) "ui:chevron_down" else "ui:chevron_right";
             try self.renderer.icon(icons.svg(chevron), entry.rect.x + 4, entry.rect.y + 6, 14, t.muted);
-            try self.renderer.textUi(page_titles[@intFromEnum(entry.page)], entry.rect.x + 24, entry.rect.y + 18, color);
+            try self.renderer.textUi(page_titles[@backingInt(entry.page)], entry.rect.x + 24, entry.rect.y + 18, color);
         } else {
             try self.renderer.textUi(entry.section.?, entry.rect.x + 24 + 16, entry.rect.y + 18, color);
         }
@@ -470,11 +475,14 @@ fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !v
     const t = self.settings.theme;
     const item = items[index];
     if (focused) try self.renderer.roundRect(rr.x - 10, rr.y + 2, rr.w + 20, rr.h - 4, 6, t.ghost_element_hover);
+    const ctrl = controlRect(self, item, rr);
+    // Clip the description column so narrow windows cannot paint under controls.
+    self.clip(.{ .x = rr.x, .y = rr.y, .w = @max(0, ctrl.x - rr.x - 12), .h = rr.h });
     try self.renderer.textUi(item.title, rr.x, rr.y + 26, t.text);
     try self.renderer.textSmall(item.desc, rr.x, rr.y + 44, t.muted);
+    self.clip(contentRect(dialogRect(self)));
     if (divider) try self.renderer.rect(rr.x, rr.y + rr.h - 1, rr.w, 1, t.border_variant);
 
-    const ctrl = controlRect(self, item, rr);
     switch (item.kind) {
         .toggle => {
             const on = boolValue(self, item.id);
@@ -494,7 +502,7 @@ fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !v
             try self.renderer.rect(plus.x + 8, cy, 10, 1, t.muted);
             try self.renderer.rect(plus.x + 13, cy - 5, 1, 11, t.muted);
             var buf: [16]u8 = undefined;
-            const text = std.fmt.bufPrint(&buf, "{d}", .{numberValue(self, item.id)}) catch "?";
+            const text = if (focused and self.settings_editing_number) self.settings_number[0..self.settings_number_len] else std.fmt.bufPrint(&buf, "{d}", .{numberValue(self, item.id)}) catch "?";
             try self.renderer.textUi(text, @round(ctrl.x + (ctrl.w - self.renderer.widthUi(text)) / 2), ctrl.y + 18, t.text);
         },
         .dropdown => {
@@ -516,7 +524,7 @@ fn drawPopup(self: *App, id: Id, ctrl: Rect, r: Rect) !void {
     const popup = popupRect(ctrl, optionCount(id), r.y + r.h);
     try self.renderer.roundRect(popup.x - 2, popup.y, popup.w + 4, popup.h + 4, 8, .{ 0, 0, 0, 50 });
     try self.renderer.roundBox(popup.x, popup.y, popup.w, popup.h, 6, t.elevated_surface, t.border);
-    const current = selectedOption(self, id);
+    const current = self.settings_option;
     for (0..optionCount(id)) |i| {
         const o = optionRect(popup, i);
         if (hovered(self, o)) try self.renderer.roundRect(o.x, o.y, o.w, o.h, radius, t.ghost_element_hover);
@@ -587,11 +595,18 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
         self.dialog = .none;
         return;
     }
+    if (searchRect(r).contains(mx, my)) {
+        self.settings_focus = .search;
+        self.settings_editing_number = false;
+        return;
+    }
     if (mx < r.x + sidebar_w) {
         var buf: [32]NavEntry = undefined;
         for (navEntries(self, r, &buf)) |entry| if (entry.rect.contains(mx, my)) {
             self.settings_query_len = 0;
-            self.settings_category = @intFromEnum(entry.page);
+            self.settings_focus = .controls;
+            self.settings_editing_number = false;
+            self.settings_category = @backingInt(entry.page);
             self.settings_row = 0;
             self.settings_scroll = 0;
             if (entry.section) |section| scrollToSection(self, section);
@@ -610,12 +625,15 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
         for (list, 0..) |item_index, pos| if (item_index == index) {
             self.settings_row = pos;
         };
+        self.settings_focus = .controls;
+        self.settings_editing_number = false;
         const item = items[index];
         const ctrl = controlRect(self, item, rr);
         switch (item.kind) {
             .number => {
                 if (minusRect(ctrl).contains(mx, my)) try stepNumber(self, item.id, -1);
                 if (plusRect(ctrl).contains(mx, my)) try stepNumber(self, item.id, 1);
+                if (ctrl.contains(mx, my) and !minusRect(ctrl).contains(mx, my) and !plusRect(ctrl).contains(mx, my)) beginNumber(self, item.id);
             },
             // Zed toggles a switch from anywhere on its row.
             .toggle => try toggle(self, item.id),
@@ -639,11 +657,44 @@ fn scrollToSection(self: *App, section: []const u8) void {
 }
 
 pub fn typeText(self: *App, text: []const u8) void {
+    if (self.settings_editing_number) {
+        for (text) |ch| if (std.ascii.isDigit(ch) and self.settings_number_len < self.settings_number.len) {
+            self.settings_number[self.settings_number_len] = ch;
+            self.settings_number_len += 1;
+        };
+        return;
+    }
+    if (self.settings_focus != .search) return;
     const room = self.settings_query.len - self.settings_query_len;
     const n = @min(room, text.len);
     @memcpy(self.settings_query[self.settings_query_len..][0..n], text[0..n]);
     self.settings_query_len += n;
     resetFocus(self);
+}
+
+fn beginNumber(self: *App, id: Id) void {
+    const value = std.fmt.bufPrint(&self.settings_number, "{d}", .{numberValue(self, id)}) catch unreachable;
+    self.settings_number_len = value.len;
+    self.settings_editing_number = true;
+}
+
+fn commitNumber(self: *App, id: Id) !void {
+    self.settings_editing_number = false;
+    const value = std.fmt.parseInt(u32, self.settings_number[0..self.settings_number_len], 10) catch return;
+    const range = numberRange(self, id);
+    if (value < range.min or value > range.max) return;
+    switch (id) {
+        .font_size => {
+            try self.renderer.setMonoSize(value);
+            self.settings.font_size = value;
+            self.settings.line_height = @max(self.settings.line_height, value);
+        },
+        .line_height => self.settings.line_height = value,
+        .tab_size => self.settings.tab_size = value,
+        .panel_width => self.settings.panel_width = value,
+        else => return,
+    }
+    try self.saveAndApplySettings();
 }
 
 fn resetFocus(self: *App) void {
@@ -660,11 +711,30 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
     const mods = sdl.keyboard.getModState();
     const shift = mods.left_shift or mods.right_shift;
 
+    if (self.settings_editing_number) {
+        switch (key) {
+            .escape => self.settings_editing_number = false,
+            .return_key, .tab => if (focused) |index| try commitNumber(self, items[index].id),
+            .backspace => if (self.settings_number_len > 0) {
+                self.settings_number_len -= 1;
+            },
+            else => {},
+        }
+        if (key != .tab) return;
+    }
     if (self.settings_dropdown) {
         switch (key) {
-            .escape, .return_key => self.settings_dropdown = false,
-            .up => if (focused) |index| try stepOption(self, items[index].id, -1),
-            .down => if (focused) |index| try stepOption(self, items[index].id, 1),
+            .escape => self.settings_dropdown = false,
+            .return_key => if (focused) |index| {
+                try selectOption(self, items[index].id, self.settings_option);
+                self.settings_dropdown = false;
+            },
+            .up => if (focused) |index| {
+                self.settings_option = (self.settings_option + optionCount(items[index].id) - 1) % optionCount(items[index].id);
+            },
+            .down => if (focused) |index| {
+                self.settings_option = (self.settings_option + 1) % optionCount(items[index].id);
+            },
             else => {},
         }
         return;
@@ -676,17 +746,26 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
         } else {
             self.dialog = .none;
         },
-        .backspace => if (self.settings_query_len > 0) {
+        .backspace => if (self.settings_focus == .search and self.settings_query_len > 0) {
             var n = self.settings_query_len - 1;
             while (n > 0 and self.settings_query[n] & 0xc0 == 0x80) n -= 1;
             self.settings_query_len = n;
             resetFocus(self);
         },
         .tab => {
-            self.settings_query_len = 0;
-            const count = page_titles.len;
-            self.settings_category = if (shift) (self.settings_category + count - 1) % count else (self.settings_category + 1) % count;
-            resetFocus(self);
+            if (self.settings_focus == .search) {
+                if (list.len > 0) {
+                    self.settings_focus = .controls;
+                    self.settings_row = if (shift) list.len - 1 else 0;
+                }
+            } else if ((!shift and self.settings_row + 1 >= list.len) or (shift and self.settings_row == 0)) {
+                self.settings_focus = .search;
+            } else if (shift) {
+                self.settings_row -= 1;
+            } else {
+                self.settings_row += 1;
+            }
+            revealFocused(self);
         },
         .up => if (self.settings_row > 0) {
             self.settings_row -= 1;
@@ -700,18 +779,27 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
         },
         .page_up => scroll(self, -200),
         .page_down => scroll(self, 200),
-        .left, .right => if (focused) |index| {
-            const dir: i32 = if (key == .right) 1 else -1;
-            const item = items[index];
-            switch (item.kind) {
-                .number => try stepNumber(self, item.id, dir),
-                .toggle => if (boolValue(self, item.id) != (dir > 0)) try toggle(self, item.id),
-                .dropdown => try stepOption(self, item.id, dir),
-                .button => {},
+        .left, .right => if (self.settings_focus == .controls) {
+            if (focused) |index| {
+                const dir: i32 = if (key == .right) 1 else -1;
+                const item = items[index];
+                switch (item.kind) {
+                    .number => try stepNumber(self, item.id, dir),
+                    .toggle => if (boolValue(self, item.id) != (dir > 0)) try toggle(self, item.id),
+                    .dropdown => try stepOption(self, item.id, dir),
+                    .button => {},
+                }
             }
         },
-        .return_key => if (focused) |index| try activate(self, index),
+        .return_key => if (self.settings_focus == .controls) {
+            if (focused) |index| {
+                if (items[index].kind == .number) beginNumber(self, items[index].id) else try activate(self, index);
+            }
+        },
         else => {},
     }
-    if (key == .up or key == .down) revealFocused(self);
+    if (key == .up or key == .down) {
+        self.settings_focus = .controls;
+        revealFocused(self);
+    }
 }

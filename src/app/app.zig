@@ -92,6 +92,11 @@ pub const App = struct {
     settings_query: [64]u8 = undefined,
     settings_query_len: usize = 0,
     settings_dropdown: bool = false,
+    settings_focus: enum { search, controls } = .search,
+    settings_editing_number: bool = false,
+    settings_number: [16]u8 = undefined,
+    settings_number_len: usize = 0,
+    settings_option: usize = 0,
     /// Screenshot/testing override for the device pixel density.
     forced_scale: ?f32 = null,
     path_input: std.ArrayList(u8) = .empty,
