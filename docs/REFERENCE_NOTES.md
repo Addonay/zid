@@ -221,3 +221,13 @@ Zed's `crates/settings_ui/src/settings_ui.rs` renders the settings window as a 2
 | `render_no_results` | Centered "No Results" + `No settings match "q"` | Identical centered layout and copy. |
 
 Not carried over (no zid counterpart): project-scope files and the `+N` file menu, "Modified in {file}" labels, sub-pages/breadcrumbs (LLM providers, MCP servers, audio), FocusFile `ctrl-N`, and migration banners.
+
+### Settings in a dedicated window (2026-11-02)
+
+| zed | zid | notes |
+|---|---|---|
+| `settings_ui` opens a real OS window | `zed::OpenSettings` spawns a decorated, resizable `sdl.video.Window` titled "Settings — Zid" | same GPU device claims the window; `renderer.window` is swapped per frame to present into it |
+| both windows stay interactive | events are routed by `window_id` to the settings view; main-window input keeps the editor context | command `focus()` returns `.settings` only for the overlay fallback |
+| window close control | `window_close_requested` on the settings window tears it down (`releaseWindow` + `deinit`), Esc inside does the same | clicking "Edit in settings.json"/keymap closes the settings window first |
+
+The overlay dialog remains as the fallback when a second window cannot be created (headless).

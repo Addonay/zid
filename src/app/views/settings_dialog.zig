@@ -112,6 +112,7 @@ pub fn open(self: *App) void {
         if (err != error.FileNotFound) self.settings_document_error = true;
         break :blk null;
     };
+    self.openSettingsWindow();
 }
 
 fn query(self: *App) []const u8 {
@@ -184,6 +185,7 @@ fn focusedItem(self: *App, lay: *const Layout) ?usize {
 // ---------------------------------------------------------------- geometry
 
 pub fn dialogRect(self: *App) Rect {
+    if (self.settings_window != null) return .{ .w = self.settings_w, .h = self.settings_h };
     const w = @max(1, @min(920, self.layout.width - 48));
     const h = @max(1, @min(640, self.layout.height - 48));
     return .{ .x = @round((self.layout.width - w) / 2), .y = @round((self.layout.height - h) / 2), .w = w, .h = h };
@@ -416,17 +418,26 @@ pub fn drawSettings(self: *App) !void {
     clampScroll(self, r, &lay);
     const focused = focusedItem(self, &lay);
 
-    try self.fill(.{ .w = self.layout.width, .h = self.layout.height }, .{ 0, 0, 0, 140 });
-    // Soft drop shadow, then the card itself.
-    for (0..4) |i| {
-        const s: f32 = @floatFromInt(4 - i);
-        try self.renderer.roundRect(r.x - s, r.y - s + 4, r.w + 2 * s, r.h + 2 * s, 10 + s, .{ 0, 0, 0, 22 });
+    const windowed = self.settings_window != null;
+    if (windowed) {
+        try self.renderer.rect(r.x, r.y, r.w, r.h, t.editor);
+    } else {
+        try self.fill(.{ .w = self.layout.width, .h = self.layout.height }, .{ 0, 0, 0, 140 });
+        // Soft drop shadow, then the card itself.
+        for (0..4) |i| {
+            const s: f32 = @floatFromInt(4 - i);
+            try self.renderer.roundRect(r.x - s, r.y - s + 4, r.w + 2 * s, r.h + 2 * s, 10 + s, .{ 0, 0, 0, 22 });
+        }
+        try self.renderer.roundBox(r.x, r.y, r.w, r.h, 8, t.editor, t.border);
     }
-    try self.renderer.roundBox(r.x, r.y, r.w, r.h, 8, t.editor, t.border);
 
     // Sidebar.
-    try self.renderer.roundRect(r.x + 1, r.y + 1, sidebar_w, r.h - 2, 7, t.panel);
-    try self.renderer.rect(r.x + 8, r.y + 1, sidebar_w - 7, r.h - 2, t.panel);
+    if (windowed) {
+        try self.renderer.rect(r.x, r.y, sidebar_w, r.h, t.panel);
+    } else {
+        try self.renderer.roundRect(r.x + 1, r.y + 1, sidebar_w, r.h - 2, 7, t.panel);
+        try self.renderer.rect(r.x + 8, r.y + 1, sidebar_w - 7, r.h - 2, t.panel);
+    }
     try self.renderer.rect(r.x + sidebar_w, r.y + 1, 1, r.h - 2, t.border);
     try drawSearch(self, r);
     try drawNav(self, r, &lay);
@@ -464,10 +475,12 @@ pub fn drawSettings(self: *App) !void {
     try drawContentScrollbar(self, s, &lay);
     self.renderer.setClip(null);
 
-    // Close button.
-    const close = closeRect(r);
-    if (hovered(self, close)) try self.renderer.roundRect(close.x, close.y, close.w, close.h, radius, t.ghost_element_hover);
-    try self.renderer.icon(icons.svg("ui:close"), close.x + 4, close.y + 4, 16, if (hovered(self, close)) t.text else t.muted);
+    // Close button (dialog mode; the window has its own chrome).
+    if (!windowed) {
+        const close = closeRect(r);
+        if (hovered(self, close)) try self.renderer.roundRect(close.x, close.y, close.w, close.h, radius, t.ghost_element_hover);
+        try self.renderer.icon(icons.svg("ui:close"), close.x + 4, close.y + 4, 16, if (hovered(self, close)) t.text else t.muted);
+    }
 
     // Expanded dropdown floats over everything, unclipped.
     if (self.settings_dropdown) if (focused) |index| if (items[index].kind == .dropdown) {
@@ -806,11 +819,11 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
         };
     }
     if (!r.contains(mx, my)) {
-        self.dialog = .none;
+        self.closeSettings();
         return;
     }
-    if (closeRect(r).contains(mx, my)) {
-        self.dialog = .none;
+    if (self.settings_window == null and closeRect(r).contains(mx, my)) {
+        self.closeSettings();
         return;
     }
     if (searchRect(r).contains(mx, my)) {
@@ -1118,7 +1131,7 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
         return;
     }
     switch (key) {
-        .escape => self.dialog = .none,
+        .escape => self.closeSettings(),
         .backspace => if (self.settings_focus == .search and self.settings_query_len > 0) {
             var n = self.settings_query_len - 1;
             while (n > 0 and self.settings_query[n] & 0xc0 == 0x80) n -= 1;

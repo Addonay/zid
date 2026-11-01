@@ -10,7 +10,8 @@ const max_line_bytes = 64 * 1024;
 const settings_dialog = @import("settings_dialog.zig");
 pub fn drawDialog(self: *App) !void {
     if (self.dialog == .settings) {
-        try settings_dialog.drawSettings(self);
+        // Rendered into its own window when present; the overlay is the fallback.
+        if (self.settings_window == null) try settings_dialog.drawSettings(self);
         return;
     }
     const t = self.settings.theme;

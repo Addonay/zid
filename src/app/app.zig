@@ -127,6 +127,11 @@ pub const App = struct {
     settings_replace_input: bool = false,
     settings_number_len: usize = 0,
     settings_option: usize = 0,
+    /// Dedicated settings window (Zed parity); the overlay dialog is the fallback.
+    settings_window: ?sdl.video.Window = null,
+    /// Settings window logical size, refreshed each frame for `dialogRect`.
+    settings_w: f32 = 0,
+    settings_h: f32 = 0,
     /// Screenshot/testing override for the device pixel density.
     forced_scale: ?f32 = null,
     path_input: std.ArrayList(u8) = .empty,
@@ -584,9 +589,51 @@ pub const App = struct {
         }
         try self.workspace.open(path);
         self.closeModal();
+        self.closeSettings();
         self.dialog = .none;
         self.keymap_editor_open = false;
         self.panel_focus = false;
+    }
+    /// Zed opens settings in a dedicated OS window; the overlay dialog stays as
+    /// the fallback when a second window cannot be created (e.g. headless).
+    pub fn openSettingsWindow(self: *App) void {
+        if (self.settings_window) |*win| {
+            win.raise() catch {};
+            self.dialog = .settings;
+            return;
+        }
+        const window = sdl.video.Window.init("Settings — Zid", 900, 700, .{ .resizable = true, .high_pixel_density = true }) catch return;
+        self.renderer.device.claimWindow(window) catch {
+            window.deinit();
+            return;
+        };
+        self.settings_window = window;
+        self.dialog = .settings;
+    }
+    /// Tears down the settings window if present; also clears `.settings`.
+    pub fn closeSettings(self: *App) void {
+        if (self.settings_window) |*win| {
+            self.renderer.device.releaseWindow(win.*);
+            win.deinit();
+            self.settings_window = null;
+        }
+        if (self.dialog == .settings) self.dialog = .none;
+    }
+    /// Presents one settings frame to the settings window on the shared device.
+    fn drawSettingsWindow(self: *App, win: *sdl.video.Window) !void {
+        const width, const height = try win.getSize();
+        if (width <= 0 or height <= 0) return;
+        const pixel_w, _ = win.getSizeInPixels() catch .{ width, height };
+        const scale = self.forced_scale orelse @as(f32, @floatFromInt(pixel_w)) / @as(f32, @floatFromInt(width));
+        self.settings_w = @floatFromInt(width);
+        self.settings_h = @floatFromInt(height);
+        const main_window = self.renderer.window;
+        defer self.renderer.window = main_window;
+        self.renderer.window = win.*;
+        try self.renderer.begin(@intCast(width), @intCast(height), scale);
+        errdefer self.renderer.abortFrame();
+        try @import("views/settings_dialog.zig").drawSettings(self);
+        try self.renderer.end();
     }
     pub fn openKeymapEditor(self: *App) !void {
         self.closeModal();
@@ -1086,11 +1133,12 @@ pub const App = struct {
         self.last_blink = sdl.timer.getMillisecondsSinceInit();
     }
     pub fn click(self: *App, mx: f32, my: f32, clicks: u8) !void {
-        if (self.dialog == .settings) {
+        // Settings clicks arrive via per-window routing; main-window clicks keep working.
+        if (self.dialog == .settings and self.settings_window == null) {
             try @import("views/settings_dialog.zig").handleClick(self, mx, my);
             return;
         }
-        if (self.dialog != .none) return;
+        if (self.dialog != .none and self.dialog != .settings) return;
         if (self.prompt != null) return @import("views/prompt.zig").click(self, mx, my);
         // An open menu sees the click first; outside clicks close it and fall through.
         const open_target: ?context_menu.Target = if (self.context_menu) |m| m.target else null;
@@ -1278,6 +1326,7 @@ pub const App = struct {
         const name = if (if (doc) |d| d.path else null) |path| std.fs.path.basename(path) else "untitled";
         const window_title = if (doc == null) std.fmt.bufPrintSentinel(&title_buffer, "{s} — Zid", .{project_name}, 0) catch "Zid" else std.fmt.bufPrintSentinel(&title_buffer, "{s}{s} — {s} — Zid", .{ if (doc.?.dirty()) @as([]const u8, "● ") else "", name, project_name }, 0) catch "Zid";
         try self.window.setTitle(window_title);
+        if (self.settings_window) |*sw| self.drawSettingsWindow(sw) catch |err| self.notice("Settings frame: {s}", .{@errorName(err)});
     }
     pub fn drawPanel(self: *App) !void {
         return project_panel.drawPanel(self);
