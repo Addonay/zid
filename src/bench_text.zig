@@ -2,6 +2,7 @@
 //! zig build-exe src/bench_text.zig -O ReleaseFast -femit-bin=/tmp/zid-text-bench
 const std = @import("std");
 const Document = @import("editor/document.zig").Document;
+const SearchPlan = @import("editor/search.zig").SearchPlan;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -25,6 +26,18 @@ pub fn main(init: std.process.Init) !void {
         try document.replaceRange(at, at + 1, "q");
     }
     const finished = std.Io.Clock.awake.now(init.io);
+    var absent = try SearchPlan.init(allocator, "not present anywhere", false);
+    defer absent.deinit();
+    var dense = try SearchPlan.init(allocator, "xx", false);
+    defer dense.deinit();
+    const range = @import("editor/search.zig").Range{ .start = 0, .end = document.buffer.len() };
+    const search_start = std.Io.Clock.awake.now(init.io);
+    if (absent.next(&document.buffer, range, 0) != null) return error.UnexpectedMatch;
+    const searched = std.Io.Clock.awake.now(init.io);
+    var matches: [4096]usize = undefined;
+    const batch = dense.enumerate(&document.buffer, range, 0, &matches);
+    const enumerated = std.Io.Clock.awake.now(init.io);
+    std.debug.print("absent_search_us={d} dense_batch_us={d} batch_matches={d} continuation={?d}\n", .{ search_start.durationTo(searched).toMicroseconds(), searched.durationTo(enumerated).toMicroseconds(), batch.written, batch.cursor });
     std.debug.print("source_bytes={d} init_us={d} typing_20000_us={d} typing_history={d} undo_redo_entries={d} undo_redo_us={d} random_edits_2000_us={d} final_pieces={d} final_bytes={d}\n", .{
         bytes.len,                                      start.durationTo(loaded).toMicroseconds(), loaded.durationTo(typed).toMicroseconds(),
         typing_entries,                                 undo_count,                                typed.durationTo(restored).toMicroseconds(),
