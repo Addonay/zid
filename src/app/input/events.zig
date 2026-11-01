@@ -187,6 +187,15 @@ fn dispatchKey(self: *App, key: sdl.keycode.Keycode, mods: sdl.keycode.KeyModifi
 pub fn simulate(self: *App, spec: []const u8) !void {
     var it = std.mem.splitScalar(u8, spec, ',');
     while (it.next()) |token| {
+        // Explicit frame progression for asynchronous offscreen QA scripts.
+        if (std.mem.startsWith(u8, token, "frames:")) {
+            const count = try std.fmt.parseInt(u32, token["frames:".len..], 10);
+            for (0..count) |_| {
+                self.pollAsync();
+                try self.draw();
+            }
+            continue;
+        }
         if (std.mem.startsWith(u8, token, "text:")) {
             const text = token["text:".len..];
             if (commands.lineInput(self)) |line| {

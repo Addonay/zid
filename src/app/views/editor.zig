@@ -90,7 +90,13 @@ fn drawLarge(self: *App) !void {
     while (at < n and row + 1 < self.pageLines()) : (row += 1) {
         const start = at;
         var text: [4096]u8 = undefined;
-        const decoded = zid.large_display.decodeLine(data[at..n], &text, self.settings.tab_size, snapshot.offset + n == large.size);
+        const selection = large.selection();
+        const origin = snapshot.offset + start;
+        const relative = zid.large_display.Selection{
+            .start = @intCast(@min(selection.start -| origin, n - start)),
+            .end = @intCast(@min(selection.end -| origin, n - start)),
+        };
+        const decoded = zid.large_display.decodeSelected(data[at..n], &text, self.settings.tab_size, snapshot.offset + n == large.size, relative);
         at += decoded.consumed;
         // Output exhaustion truncates one logical line rather than wrapping an
         // arbitrary byte count into rows with duplicated line numbers.
@@ -105,7 +111,16 @@ fn drawLarge(self: *App) !void {
         var offset_buf: [32]u8 = undefined;
         const offset = if (line) |number| try std.fmt.bufPrint(&offset_buf, "{d}", .{number + 1}) else try std.fmt.bufPrint(&offset_buf, "@{x}", .{snapshot.offset + start});
         try self.renderer.text(offset, e.x + 8, y, t.line_number);
-        try self.renderer.text(text[0..decoded.written], e.x + 120 - doc.scroll_x, y, t.editor_foreground);
+        const x = e.x + 120 - doc.scroll_x;
+        self.clip(.{ .x = e.x + @min(120, e.w), .y = e.y + height, .w = @max(0, e.w - 120), .h = @max(0, e.h - height) });
+        if (decoded.selection != null or decoded.selected_newline) {
+            const mapped = decoded.selection orelse zid.large_display.Selection{ .start = decoded.written, .end = decoded.written };
+            const sx = self.renderer.width(text[0..mapped.start]);
+            const ex = self.renderer.width(text[0..mapped.end]);
+            try self.renderer.rect(x + sx, y - @as(f32, @floatFromInt(self.settings.font_size)), ex - sx + (if (decoded.selected_newline) @as(f32, 8) else 0), height, t.selection);
+        }
+        try self.renderer.text(text[0..decoded.written], x, y, t.editor_foreground);
+        self.clip(e);
         if (decoded.truncated) try self.renderer.text("…", e.x + e.w - 28, y, t.muted);
         if (newline) {
             if (line) |*number| number.* += 1;
