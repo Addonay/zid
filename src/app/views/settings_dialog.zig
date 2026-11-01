@@ -12,29 +12,37 @@ const Rect = @import("../layout.zig").Rect;
 const icons = @import("icons");
 const theme_mod = @import("../theme.zig");
 
-pub const Page = enum { general, appearance, editor, panels, keymap };
-const page_titles = [_][]const u8{ "General", "Appearance", "Editor", "Panels", "Keymap" };
+pub const Page = enum { general, appearance, keymap, editor, languages_and_tools, search_and_files, window_and_layout, panels, debugger, terminal, version_control, collaboration, ai, network, developer };
+const page_titles = [_][]const u8{ "General", "Appearance", "Keymap", "Editor", "Languages & Tools", "Search & Files", "Window & Layout", "Panels", "Debugger", "Terminal", "Version Control", "Collaboration", "AI", "Network", "Developer" };
+const settings_assets = @import("settings_assets");
 
-const Kind = enum { toggle, number, dropdown, button };
+const Kind = enum { toggle, number, dropdown, button, value };
 const helpers = @import("../settings_helpers.zig");
 const Id = helpers.Id;
 
-const Item = struct { id: Id, page: Page, section: []const u8, title: []const u8, desc: []const u8, kind: Kind, button: []const u8 = "" };
+const Item = struct { id: Id, page: Page, section: []const u8, title: []const u8, desc: []const u8, kind: Kind, button: []const u8 = "", path: []const []const u8 = &.{}, jsonpath: []const u8 = "", default: []const u8 = "null" };
 
-const items = [_]Item{
+const primary_items = [_]Item{
     .{ .id = .open_file, .page = .general, .section = "Configuration", .title = "Settings File", .desc = "Open settings.json in an editor tab", .kind = .button, .button = "Edit in settings.json" },
     .{ .id = .reload, .page = .general, .section = "Configuration", .title = "Reload Configuration", .desc = "Re-read settings.json and keymap.json from disk", .kind = .button, .button = "Reload" },
-    .{ .id = .theme, .page = .appearance, .section = "Theme", .title = "Theme", .desc = "The color theme for the editor and UI", .kind = .dropdown },
-    .{ .id = .icon_theme, .page = .appearance, .section = "Theme", .title = "Icon Theme", .desc = "File and folder icons in the project panel and tabs", .kind = .dropdown },
-    .{ .id = .font_size, .page = .appearance, .section = "Buffer Font", .title = "Font Size", .desc = "Font size for editor text, in pixels", .kind = .number },
-    .{ .id = .line_height, .page = .appearance, .section = "Buffer Font", .title = "Line Height", .desc = "Height of each buffer line, in pixels", .kind = .number },
-    .{ .id = .tab_size, .page = .editor, .section = "Indentation", .title = "Tab Size", .desc = "Number of spaces inserted for a tab", .kind = .number },
-    .{ .id = .cursor_blink, .page = .editor, .section = "Cursor", .title = "Cursor Blink", .desc = "Whether the cursor blinks in the editor", .kind = .toggle },
-    .{ .id = .panel_width, .page = .panels, .section = "Project Panel", .title = "Default Width", .desc = "Width of the project panel, in pixels", .kind = .number },
-    .{ .id = .auto_fold_dirs, .page = .panels, .section = "Project Panel", .title = "Auto Fold Directories", .desc = "Show single-child directory chains as one compact entry", .kind = .toggle },
     .{ .id = .open_keymap, .page = .keymap, .section = "Keybindings", .title = "Keymap Editor", .desc = "Browse and search every keybinding (Zed default keymap plus keymap.json)", .kind = .button, .button = "Open Keymap" },
     .{ .id = .open_keymap_file, .page = .keymap, .section = "Keybindings", .title = "Keymap File", .desc = "Edit keymap.json (Zed format; later entries override defaults)", .kind = .button, .button = "Edit keymap.json" },
-    .{ .id = .indent_guides, .page = .panels, .section = "Project Panel", .title = "Indent Guides", .desc = "Show indent guides in the project panel", .kind = .toggle },
+};
+
+const items = primary_items ++ catalogue: {
+    @setEvalBranchQuota(100000);
+    var result: [settings_assets.entries.len]Item = undefined;
+    for (settings_assets.entries, 0..) |entry, i| {
+        const id: Id = if (std.mem.eql(u8, entry.path, "theme")) .theme else if (std.mem.eql(u8, entry.path, "icon_theme")) .icon_theme else if (std.mem.eql(u8, entry.path, "buffer_font_size")) .font_size else if (std.mem.eql(u8, entry.path, "tab_size")) .tab_size else if (std.mem.eql(u8, entry.path, "cursor_blink")) .cursor_blink else if (std.mem.eql(u8, entry.path, "project_panel.default_width")) .panel_width else if (std.mem.eql(u8, entry.path, "project_panel.auto_fold_dirs")) .auto_fold_dirs else .catalogue;
+        const kind: Kind = switch (id) {
+            .theme, .icon_theme => .dropdown,
+            .font_size, .tab_size, .panel_width => .number,
+            .cursor_blink, .auto_fold_dirs => .toggle,
+            else => .value,
+        };
+        result[i] = .{ .id = id, .page = @field(Page, entry.page), .section = entry.section, .title = entry.title, .desc = entry.description, .kind = kind, .path = entry.segments, .jsonpath = entry.path, .default = entry.default };
+    }
+    break :catalogue result;
 };
 
 pub const theme_list = [_]struct { id: theme_mod.ThemeName, label: []const u8 }{
@@ -46,6 +54,9 @@ pub const theme_list = [_]struct { id: theme_mod.ThemeName, label: []const u8 }{
     .{ .id = .tokyo_night, .label = "Tokyo Night" },
     .{ .id = .catppuccin, .label = "Catppuccin Mocha" },
     .{ .id = .vscode, .label = "Dark Modern (VS Code)" },
+    .{ .id = .one_light, .label = "One Light" },
+    .{ .id = .ayu_light, .label = "Ayu Light" },
+    .{ .id = .gruvbox_light, .label = "Gruvbox Light" },
 };
 
 // Geometry (Zed: SIDEBAR_WIDTH 226, sidebar p_2p5, search h_7, content px_8).
@@ -62,7 +73,8 @@ const item_h: f32 = 60;
 const binding_h: f32 = 32;
 const control_h: f32 = 26;
 const radius: f32 = 4;
-const max_rows = 96;
+const max_rows = items.len * 3 + page_titles.len;
+const max_nav = items.len + page_titles.len;
 
 const RowKind = union(enum) { title: Page, header: []const u8, item: usize };
 const Row = struct { kind: RowKind, y: f32, h: f32 };
@@ -88,6 +100,10 @@ pub fn open(self: *App) void {
     self.settings_dropdown = false;
     self.settings_focus = .search;
     self.settings_editing_number = false;
+    self.settings_editing_json = false;
+    self.settings_nav_scroll = 0;
+    if (self.settings_document) |*document| document.deinit();
+    self.settings_document = @import("../settings_document.zig").Document.load(self.gpa, self.io, self.config_root) catch null;
 }
 
 fn query(self: *App) []const u8 {
@@ -96,8 +112,9 @@ fn query(self: *App) []const u8 {
 
 fn matches(item: Item, q: []const u8) bool {
     if (q.len == 0) return true;
-    const path: ?[]const u8 = switch (item.id) {
-        .theme => "theme_name",
+    const path: ?[]const u8 = if (item.jsonpath.len > 0) item.jsonpath else switch (item.id) {
+        .catalogue => item.jsonpath,
+        .theme => "theme",
         .auto_fold_dirs => "auto_fold_dirs",
         .open_keymap, .open_keymap_file, .open_file, .reload => null,
         else => @tagName(item.id),
@@ -181,13 +198,14 @@ fn controlWidth(self: *App, item: Item) f32 {
         .number => 116,
         .dropdown => 200,
         .button => self.renderer.widthUi(item.button) + 24,
+        .value => if (std.mem.eql(u8, item.default, "true") or std.mem.eql(u8, item.default, "false")) 32 else 200,
     };
 }
 fn measureSmall(self: *App, text: []const u8) f32 {
     return self.renderer.widthSmall(text);
 }
 fn controlRect(self: *App, item: Item, rr: Rect) Rect {
-    const w = controlWidth(self, item);
+    const w = @min(controlWidth(self, item), @max(32, rr.w));
     const h: f32 = if (item.kind == .toggle) 18 else control_h;
     return .{ .x = rr.x + rr.w - w, .y = if (rr.w < w + 180) rr.y + rr.h - h - 5 else @round(rr.y + (rr.h - h) / 2), .w = w, .h = h };
 }
@@ -209,9 +227,9 @@ fn optionRect(popup: Rect, i: usize) Rect {
 
 const NavEntry = struct { page: Page, section: ?[]const u8, rect: Rect };
 /// Sidebar tree: every page, with the active page expanded into its sections (Zed's TreeViewItem).
-fn navEntries(self: *App, r: Rect, buf: *[32]NavEntry) []NavEntry {
+fn navEntries(self: *App, r: Rect, buf: *[max_nav]NavEntry) []NavEntry {
     var n: usize = 0;
-    var y = r.y + sidebar_pad + search_h + 12;
+    var y = r.y + sidebar_pad + search_h + 12 - self.settings_nav_scroll;
     const x = r.x + sidebar_pad;
     const w = sidebar_w - 2 * sidebar_pad;
     for (0..page_titles.len) |p| {
@@ -333,15 +351,7 @@ fn stepOption(self: *App, id: Id, dir: i32) !void {
 
 fn press(self: *App, id: Id) !void {
     switch (id) {
-        .open_file => {
-            // Write current values first so a missing file opens with real content.
-            try self.saveAndApplySettings();
-            const path = try std.fs.path.join(self.gpa, &.{ self.config_root, "settings.json" });
-            defer self.gpa.free(path);
-            try self.workspace.open(path);
-            self.dialog = .none;
-            self.panel_focus = false;
-        },
+        .open_file => try self.openConfigFile("settings.json"),
         .open_keymap => {
             self.dialog = .none;
             try self.openKeymapEditor();
@@ -364,6 +374,7 @@ fn activate(self: *App, index: usize) !void {
             self.settings_dropdown = true;
         },
         .number => {},
+        .value => try beginValue(self, index),
     }
 }
 
@@ -449,8 +460,10 @@ fn drawSearch(self: *App, r: Rect) !void {
 
 fn drawNav(self: *App, r: Rect, lay: *const Layout) !void {
     const t = self.settings.theme;
-    var buf: [32]NavEntry = undefined;
+    var buf: [max_nav]NavEntry = undefined;
     const searching = query(self).len > 0;
+    self.clip(.{ .x = r.x, .y = searchRect(r).y + search_h + 8, .w = sidebar_w, .h = r.h - search_h - nav_footer_h - 28 });
+    defer self.renderer.setClip(null);
     for (navEntries(self, r, &buf)) |entry| {
         const is_page = entry.section == null;
         const selected = is_page and entry.page == currentPage(self) and !searching;
@@ -504,6 +517,12 @@ fn resetValue(self: *App, id: Id) !void {
     if (id == .theme) try self.reloadConfig();
 }
 
+fn clipContent(self: *App, r: Rect) void {
+    const c = contentRect(dialogRect(self));
+    const x = @max(c.x, r.x);
+    const y = @max(c.y, r.y);
+    self.clip(.{ .x = x, .y = y, .w = @max(0, @min(c.x + c.w, r.x + r.w) - x), .h = @max(0, @min(c.y + c.h, r.y + r.h) - y) });
+}
 fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !void {
     const t = self.settings.theme;
     const item = items[index];
@@ -511,9 +530,9 @@ fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !v
     const ctrl = controlRect(self, item, rr);
     const stacked = rr.w < ctrl.w + 180;
     const desc_width = if (stacked) rr.w else @max(1, ctrl.x - rr.x - 12);
-    self.clip(.{ .x = rr.x, .y = rr.y, .w = @max(0, desc_width), .h = rr.h });
+    clipContent(self, .{ .x = rr.x, .y = rr.y, .w = @max(0, desc_width), .h = rr.h });
     try self.renderer.textUi(item.title, rr.x, rr.y + 26, t.text);
-    var rest = item.desc;
+    var rest = if (item.desc.len > 0) item.desc else item.jsonpath;
     var baseline = rr.y + 44;
     while (rest.len > 0) {
         const end = helpers.lineEnd(rest, desc_width, self, measureSmall);
@@ -522,7 +541,7 @@ fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !v
         baseline += 16;
     }
     self.clip(contentRect(dialogRect(self)));
-    if (helpers.changed(self.settings, item.id)) {
+    if (helpers.changed(self.settings, item.id) or (item.kind == .value and self.settings_document != null and self.settings_document.?.get(item.path) != null)) {
         const reset = resetRect(self, item, rr);
         if (hovered(self, reset)) try self.renderer.roundRect(reset.x, reset.y, reset.w, reset.h, radius, t.element_hover);
         try self.renderer.textSmall("Reset", reset.x + 3, reset.y + 15, t.accent);
@@ -530,6 +549,21 @@ fn drawItem(self: *App, rr: Rect, index: usize, focused: bool, divider: bool) !v
     if (divider) try self.renderer.rect(rr.x, rr.y + rr.h - 1, rr.w, 1, t.border_variant);
 
     switch (item.kind) {
+        .value => {
+            const value = valueText(self, item);
+            if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "false")) {
+                const on = std.mem.eql(u8, value, "true");
+                const sy = ctrl.y + (ctrl.h - 18) / 2;
+                try self.renderer.roundBox(ctrl.x, sy, ctrl.w, 18, 9, if (on) t.accent else t.element_background, if (on) t.accent else t.border);
+                try self.renderer.roundRect(if (on) ctrl.x + ctrl.w - 16 else ctrl.x + 2, sy + 2, 14, 14, 7, if (on) t.editor else t.muted);
+                return;
+            }
+            try self.renderer.roundBox(ctrl.x, ctrl.y, ctrl.w, ctrl.h, radius, t.element_background, if (focused) t.border_focused else t.border);
+            clipContent(self, .{ .x = ctrl.x + 8, .y = ctrl.y, .w = ctrl.w - 16, .h = ctrl.h });
+            const text = if (focused and self.settings_editing_json) self.settings_number[0..self.settings_number_len] else valueText(self, item);
+            try self.renderer.textSmall(text, ctrl.x + 8, ctrl.y + 18, t.text);
+            self.clip(contentRect(dialogRect(self)));
+        },
         .toggle => {
             const on = boolValue(self, item.id);
             const track = if (on) t.accent else t.element_background;
@@ -602,6 +636,14 @@ fn clampScroll(self: *App, r: Rect, lay: *const Layout) void {
 
 pub fn scroll(self: *App, dy: f32) void {
     self.settings_dropdown = false;
+    if (self.mouse_x < dialogRect(self).x + sidebar_w) {
+        var nav_buffer: [max_nav]NavEntry = undefined;
+        const count = navEntries(self, dialogRect(self), &nav_buffer).len;
+        const available = dialogRect(self).h - sidebar_pad - search_h - 12 - nav_footer_h;
+        const limit = @max(0, @as(f32, @floatFromInt(count)) * nav_row_h - available);
+        self.settings_nav_scroll = std.math.clamp(self.settings_nav_scroll + dy, 0, limit);
+        return;
+    }
     self.settings_scroll += dy;
     var lay = layout(self);
     clampScroll(self, dialogRect(self), &lay);
@@ -647,7 +689,7 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
         return;
     }
     if (mx < r.x + sidebar_w) {
-        var buf: [32]NavEntry = undefined;
+        var buf: [max_nav]NavEntry = undefined;
         for (navEntries(self, r, &buf)) |entry| if (entry.rect.contains(mx, my)) {
             self.settings_query_len = 0;
             self.settings_focus = .controls;
@@ -675,7 +717,10 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
         self.settings_editing_number = false;
         const item = items[index];
         const ctrl = controlRect(self, item, rr);
-        if (helpers.changed(self.settings, item.id) and resetRect(self, item, rr).contains(mx, my)) return resetValue(self, item.id);
+        if (resetRect(self, item, rr).contains(mx, my)) {
+            if (item.kind == .value) return resetCatalogue(self, index);
+            if (helpers.changed(self.settings, item.id)) return resetValue(self, item.id);
+        }
         switch (item.kind) {
             .number => {
                 if (minusRect(ctrl).contains(mx, my)) try stepNumber(self, item.id, -1);
@@ -684,6 +729,7 @@ pub fn handleClick(self: *App, mx: f32, my: f32) !void {
             },
             // Zed toggles a switch from anywhere on its row.
             .toggle => try toggle(self, item.id),
+            .value => if (ctrl.contains(mx, my) or std.mem.eql(u8, item.default, "true") or std.mem.eql(u8, item.default, "false")) try activate(self, index),
             .dropdown, .button => if (ctrl.contains(mx, my)) try activate(self, index),
         }
         return;
@@ -704,6 +750,16 @@ fn scrollToSection(self: *App, section: []const u8) void {
 }
 
 pub fn typeText(self: *App, text: []const u8) void {
+    if (self.settings_editing_json) {
+        if (self.settings_replace_input) {
+            self.settings_number_len = 0;
+            self.settings_replace_input = false;
+        }
+        const n = @min(text.len, self.settings_number.len - self.settings_number_len);
+        @memcpy(self.settings_number[self.settings_number_len..][0..n], text[0..n]);
+        self.settings_number_len += n;
+        return;
+    }
     if (self.settings_editing_number) {
         for (text) |ch| if (std.ascii.isDigit(ch) and self.settings_number_len < self.settings_number.len) {
             self.settings_number[self.settings_number_len] = ch;
@@ -758,6 +814,41 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
     const mods = sdl.keyboard.getModState();
     const shift = mods.left_shift or mods.right_shift;
 
+    if (self.settings_editing_json) {
+        if (mods.left_control or mods.right_control) {
+            switch (key) {
+                .a => self.settings_replace_input = true,
+                .v => {
+                    const text = try sdl.clipboard.getText();
+                    defer sdl.free(text);
+                    typeText(self, text);
+                },
+                .c, .x => {
+                    const text = try self.gpa.dupeSentinel(u8, self.settings_number[0..self.settings_number_len], 0);
+                    defer self.gpa.free(text);
+                    try sdl.clipboard.setText(text);
+                    if (key == .x) self.settings_number_len = 0;
+                },
+                else => {},
+            }
+            return;
+        }
+        switch (key) {
+            .escape => self.settings_editing_json = false,
+            .return_key, .tab => if (focused) |index| try commitValue(self, index),
+            .backspace => {
+                if (self.settings_replace_input) {
+                    self.settings_number_len = 0;
+                    self.settings_replace_input = false;
+                } else if (self.settings_number_len > 0) {
+                    self.settings_number_len -= 1;
+                    while (self.settings_number_len > 0 and self.settings_number[self.settings_number_len] & 0xc0 == 0x80) self.settings_number_len -= 1;
+                }
+            },
+            else => {},
+        }
+        return;
+    }
     if (self.settings_editing_number) {
         switch (key) {
             .escape => self.settings_editing_number = false,
@@ -834,11 +925,14 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
                     .number => try stepNumber(self, item.id, dir),
                     .toggle => if (boolValue(self, item.id) != (dir > 0)) try toggle(self, item.id),
                     .dropdown => try stepOption(self, item.id, dir),
-                    .button => {},
+                    .button, .value => {},
                 }
             }
         },
         .delete => {
+            if (self.settings_focus == .controls) if (focused) |index| if (items[index].kind == .value) {
+                return resetCatalogue(self, index);
+            };
             const id: ?Id = if (focused) |index| items[index].id else null;
             if (helpers.keyboardResetTarget(self.settings, id, self.settings_focus == .controls)) |target| try resetValue(self, target);
         },
@@ -853,4 +947,60 @@ pub fn handleKey(self: *App, key: sdl.keycode.Keycode) !void {
         self.settings_focus = .controls;
         revealFocused(self);
     }
+}
+
+fn resetCatalogue(self: *App, index: usize) !void {
+    if (self.settings_document) |*document| {
+        document.remove(items[index].path);
+        try document.save(self.gpa, self.io, self.config_root);
+        try self.reloadConfig();
+        try self.refreshProject();
+        self.config_stamp = self.configurationStamp();
+    }
+}
+fn valueText(self: *App, item: Item) []const u8 {
+    if (self.settings_document) |*document| if (document.get(item.path)) |value| {
+        return std.json.Stringify.valueAlloc(self.frame_arena.allocator(), value, .{}) catch item.default;
+    };
+    return item.default;
+}
+fn beginValue(self: *App, index: usize) !void {
+    const text = valueText(self, items[index]);
+    if (std.mem.eql(u8, text, "true") or std.mem.eql(u8, text, "false")) {
+        const replacement = if (std.mem.eql(u8, text, "true")) "false" else "true";
+        @memcpy(self.settings_number[0..replacement.len], replacement);
+        self.settings_number_len = replacement.len;
+        try commitValue(self, index);
+        return;
+    }
+    if (text.len > self.settings_number.len) {
+        self.notice("Value too large for inline editing; use settings.json", .{});
+        return;
+    }
+    @memcpy(self.settings_number[0..text.len], text);
+    self.settings_number_len = text.len;
+    self.settings_editing_json = true;
+    self.settings_replace_input = true;
+}
+fn commitValue(self: *App, index: usize) !void {
+    const Document = @import("../settings_document.zig").Document;
+    if (self.settings_document == null) self.settings_document = try Document.parse(self.gpa, "{}");
+    const old = try std.json.Stringify.valueAlloc(self.gpa, self.settings_document.?.parsed.value, .{});
+    defer self.gpa.free(old);
+    var candidate = try Document.parse(self.gpa, old);
+    defer candidate.deinit();
+    candidate.setJson(items[index].path, self.settings_number[0..self.settings_number_len]) catch {
+        self.notice("Invalid JSON value (strings need quotes)", .{});
+        return;
+    };
+    _ = config.settingsFromDocument(self.gpa, &candidate) catch |err| {
+        self.notice("Invalid setting: {s}", .{@errorName(err)});
+        return;
+    };
+    try candidate.save(self.gpa, self.io, self.config_root);
+    self.settings_editing_json = false;
+    try self.reloadConfig();
+    try self.refreshProject();
+    self.config_stamp = self.configurationStamp();
+    self.notice("Setting saved; unimplemented features remain inactive", .{});
 }

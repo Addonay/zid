@@ -66,6 +66,13 @@ pub const Theme = struct {
     active_line_number: Color = dark_fallback.active_line_number,
     inactive_tab: Color = dark_fallback.inactive_tab,
     scrollbar_thumb: Color = .{ 200, 204, 212, 76 },
+    icon: Color = .{ 220, 224, 229, 255 },
+    warning: Color = .{ 222, 193, 132, 255 },
+    icon_disabled: Color = .{ 85, 90, 99, 255 },
+    border_selected: Color = .{ 41, 49, 65, 255 },
+    info_background: Color = .{ 116, 173, 232, 26 },
+    info_border: Color = .{ 41, 59, 91, 255 },
+    text_disabled: Color = .{ 135, 138, 152, 255 },
     tokens: [@typeInfo(token.Kind).@"enum".field_names.len]TokenStyle = @splat(.{}),
 
     pub fn builtin(gpa: std.mem.Allocator, name: ThemeName) !Theme {
@@ -96,7 +103,7 @@ pub const Theme = struct {
                 .{ "background", "background" },                          .{ "surface", "surface.background" },                   .{ "border", "border" },                         .{ "text", "text" },                                  .{ "muted", "text.muted" },                  .{ "line_number", "editor.line_number" },          .{ "selected", "element.selected" },                     .{ "accent", "text.accent" },                        .{ "error_text", "error" },
                 .{ "title_bar", "title_bar.background" },                 .{ "tab_bar", "tab_bar.background" },                   .{ "active_tab", "tab.active_background" },      .{ "panel", "panel.background" },                     .{ "editor", "editor.background" },          .{ "status", "status_bar.background" },            .{ "editor_foreground", "editor.foreground" },           .{ "active_line", "editor.active_line.background" }, .{ "border_variant", "border.variant" },
                 .{ "border_focused", "border.focused" },                  .{ "elevated_surface", "elevated_surface.background" }, .{ "element_background", "element.background" }, .{ "element_hover", "element.hover" },                .{ "element_selected", "element.selected" }, .{ "ghost_element_hover", "ghost_element.hover" }, .{ "ghost_element_selected", "ghost_element.selected" }, .{ "placeholder", "text.placeholder" },              .{ "indent_guide", "editor.indent_guide" },
-                .{ "indent_guide_active", "editor.indent_guide_active" }, .{ "active_line_number", "editor.active_line_number" }, .{ "inactive_tab", "tab.inactive_background" },  .{ "scrollbar_thumb", "scrollbar.thumb.background" },
+                .{ "indent_guide_active", "editor.indent_guide_active" }, .{ "active_line_number", "editor.active_line_number" }, .{ "inactive_tab", "tab.inactive_background" },  .{ "scrollbar_thumb", "scrollbar.thumb.background" }, .{ "icon", "icon" }, .{ "icon_disabled", "icon.disabled" }, .{ "border_selected", "border.selected" }, .{ "info_background", "info.background" }, .{ "info_border", "info.border" }, .{ "text_disabled", "text.disabled" }, .{ "warning", "warning" },
             };
             inline for (fields) |pair| if (style.object.get(pair[1])) |value| {
                 if (try parseColor(value)) |color| @field(result, pair[0]) = color;

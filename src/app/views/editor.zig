@@ -8,10 +8,10 @@ const Rect = @import("../layout.zig").Rect;
 const syntax = zid.syntax;
 const max_line_bytes = 64 * 1024;
 pub fn drawEditor(self: *App) !void {
-    const doc = self.workspace.current();
     const e = try self.editorRect();
     const t = self.settings.theme;
     try self.fill(e, t.editor);
+    const doc = self.workspace.currentOrNull() orelse return;
     if (doc.large != null) return drawLarge(self);
     const line_height: f32 = @floatFromInt(self.settings.line_height);
     const lang = syntax.Language.fromPath(doc.path orelse "");
@@ -221,6 +221,7 @@ pub fn drawRun(self: *App, bytes: []const u8, start: usize, end: usize, x: f32, 
 }
 
 pub fn drawCaret(self: *App) !void {
+    if (self.workspace.currentOrNull() == null) return;
     if (self.workspace.current().large != null) return;
     if (!self.focused or !self.caret_visible or self.panel_focus or self.search_focused or self.dialog != .none) return;
     const doc = self.workspace.current();

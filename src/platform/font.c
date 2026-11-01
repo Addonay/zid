@@ -24,11 +24,22 @@ int zid_font_bitmap(ZidFont*f,unsigned index,ZidBitmap*out){if(FT_Load_Glyph(f->
 #include "../gfx/c/nanosvg.h"
 #define NANOSVGRAST_IMPLEMENTATION
 #include "../gfx/c/nanosvgrast.h"
+/* NanoSVG has no <mask> support and would paint the mask shape itself. Zed's icons
+   only use full-bounds luminance masks, so blanking the element is equivalent. */
+static void zid_strip_masks(char *buf) {
+    char *start;
+    while ((start = strstr(buf, "<mask")) != NULL) {
+        char *end = strstr(start, "</mask>");
+        if (!end) break;
+        memset(start, ' ', (size_t)(end + 7 - start));
+    }
+}
 int zid_svg_alpha(const char *src, size_t len, int size, unsigned char *alpha) {
-    if (len > 1048576 || size < 1 || size > 32) return 0;
+    if (len > 1048576 || size < 1 || size > 64) return 0;
     char *buf = malloc(len + 1);
     if (!buf) return 0;
     memcpy(buf, src, len); buf[len] = 0;
+    zid_strip_masks(buf);
     NSVGimage *img = nsvgParse(buf, "px", 96);
     free(buf);
     if (!img || img->width <= 0 || img->height <= 0) { if (img) nsvgDelete(img); return 0; }
@@ -57,6 +68,7 @@ int zid_svg_rgba(const char *src, size_t len, int size, unsigned char *rgba_out)
     char *buf = malloc(len + 1);
     if (!buf) return 0;
     memcpy(buf, src, len); buf[len] = 0;
+    zid_strip_masks(buf);
     NSVGimage *img = nsvgParse(buf, "px", 96);
     free(buf);
     if (!img || img->width <= 0 || img->height <= 0) { if (img) nsvgDelete(img); return 0; }

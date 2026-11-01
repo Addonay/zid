@@ -51,3 +51,9 @@ test {
     _ = large_display;
     _ = large_worker;
 }
+
+/// RSA for the zed.dev native-app sign-in flow.
+pub const rsa = @import("core/rsa.zig");
+test {
+    _ = rsa;
+}

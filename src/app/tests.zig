@@ -1,6 +1,9 @@
 test {
     _ = @import("layout.zig");
     _ = @import("config.zig");
+    _ = @import("zed_auth.zig");
+    _ = @import("settings_document.zig");
+    _ = @import("title_info.zig");
     _ = @import("settings_helpers.zig");
     _ = @import("project.zig");
     _ = @import("text_match.zig");

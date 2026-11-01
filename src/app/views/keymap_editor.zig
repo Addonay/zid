@@ -407,6 +407,8 @@ fn drawRow(r: *Renderer, t: Theme, g: Geometry, row_y: f32, binding: *const keym
 
     const source = switch (binding.source) {
         .default => "Default",
+        .base => "Base",
+        .vim => "Vim",
         .user => "User",
     };
     try drawFit(r, source, g.col_x[4] + cell_pad, baseline, g.col_w[4] - 2 * cell_pad, t.muted, false);

@@ -1,6 +1,6 @@
 const std = @import("std");
 const config = @import("config.zig");
-pub const Id = enum { open_keymap, open_keymap_file, open_file, reload, theme, icon_theme, font_size, line_height, tab_size, cursor_blink, panel_width, auto_fold_dirs, indent_guides };
+pub const Id = enum { catalogue, open_keymap, open_keymap_file, open_file, reload, theme, icon_theme, font_size, line_height, tab_size, cursor_blink, panel_width, auto_fold_dirs, indent_guides };
 
 pub fn changed(s: config.Settings, id: Id) bool {
     const d: config.Settings = .{};

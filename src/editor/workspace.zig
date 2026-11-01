@@ -8,6 +8,7 @@ pub const Workspace = struct {
     root: []u8,
     documents: std.ArrayList(Document) = .empty,
     files: std.ArrayList([]u8) = .empty,
+    directories: std.ArrayList([]u8) = .empty,
     active: usize = 0,
     /// Opening remains synchronous and memory-backed in this slice. Bound memory
     /// until the file-backed large-file reader is integrated.
@@ -20,6 +21,8 @@ pub const Workspace = struct {
         self.documents.deinit(self.allocator);
         for (self.files.items) |file| self.allocator.free(file);
         self.files.deinit(self.allocator);
+        for (self.directories.items) |path| self.allocator.free(path);
+        self.directories.deinit(self.allocator);
         self.allocator.free(self.root);
     }
     /// Switches the project root and rescans it. Open documents stay open (absolute paths).
@@ -33,6 +36,10 @@ pub const Workspace = struct {
             return err;
         };
         self.allocator.free(previous);
+    }
+    pub fn currentOrNull(self: *Workspace) ?*Document {
+        if (self.documents.items.len == 0) return null;
+        return &self.documents.items[self.active];
     }
     pub fn current(self: *Workspace) *Document {
         return &self.documents.items[self.active];
@@ -180,12 +187,12 @@ pub const Workspace = struct {
         if (!identity.eql(Document.DiskIdentity.fromStat(stat))) return error.ExternalFileChanged;
     }
     pub fn closeActive(self: *Workspace) !void {
-        if (self.current().dirty()) return error.UnsavedChanges;
+        const doc = self.currentOrNull() orelse return;
+        if (doc.dirty()) return error.UnsavedChanges;
         const closing = self.active;
-        if (self.documents.items.len == 1) try self.newDocument();
         self.documents.items[closing].deinit();
         _ = self.documents.orderedRemove(closing);
-        self.active = @min(self.active, self.documents.items.len - 1);
+        self.active = @min(self.active, self.documents.items.len -| 1);
     }
     pub fn scan(self: *Workspace) !void {
         var directory = try std.Io.Dir.cwd().openDir(self.io, self.root, .{ .iterate = true });
@@ -195,11 +202,21 @@ pub const Workspace = struct {
             for (refreshed.items) |file| self.allocator.free(file);
             refreshed.deinit(self.allocator);
         }
+        var directories: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (directories.items) |path| self.allocator.free(path);
+            directories.deinit(self.allocator);
+        }
         var walker = try directory.walkSelectively(self.allocator);
         defer walker.deinit();
         while (try walker.next(self.io)) |entry| {
             if (entry.kind == .directory) {
-                if (entry.basename[0] != '.' and !excluded(entry.basename) and entry.depth() < 12) try walker.enter(self.io, entry);
+                if (entry.basename[0] != '.' and !excluded(entry.basename) and entry.depth() < 12 and directories.items.len < 4000) {
+                    const path = try std.fmt.allocPrint(self.allocator, "{s}/", .{entry.path});
+                    errdefer self.allocator.free(path);
+                    try directories.append(self.allocator, path);
+                    try walker.enter(self.io, entry);
+                }
             } else if (entry.kind == .file and refreshed.items.len < 4000) {
                 const path = try self.allocator.dupe(u8, entry.path);
                 errdefer self.allocator.free(path);
@@ -215,6 +232,9 @@ pub const Workspace = struct {
         for (self.files.items) |file| self.allocator.free(file);
         self.files.deinit(self.allocator);
         self.files = refreshed;
+        for (self.directories.items) |path| self.allocator.free(path);
+        self.directories.deinit(self.allocator);
+        self.directories = directories;
         log.debug("scanned {s}: {d} files (limit 4000, depth 12)", .{ self.root, self.files.items.len });
     }
     fn excluded(name: []const u8) bool {
@@ -249,8 +269,9 @@ test "workspace opens, edits, atomically saves and closes its final document" {
     try std.testing.expect(workspace.current().dirty());
     try workspace.current().redo();
     try workspace.closeActive();
-    try std.testing.expectEqual(@as(usize, 1), workspace.documents.items.len);
-    try std.testing.expect(workspace.current().path == null);
+    try std.testing.expectEqual(@as(usize, 0), workspace.documents.items.len);
+    try std.testing.expect(workspace.currentOrNull() == null);
+    try workspace.closeActive();
 }
 
 test "workspace scan skips dependency/build trees and hidden directories" {
@@ -491,5 +512,5 @@ test "large files open bounded read only, navigate, index and close" {
     _ = doc.large.?.poll(&window);
     try std.testing.expectEqual(error.FileChanged, doc.large.?.failure.?);
     try workspace.closeActive();
-    try std.testing.expect(workspace.current().large == null);
+    try std.testing.expect(workspace.currentOrNull() == null);
 }

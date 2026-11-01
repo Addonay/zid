@@ -29,7 +29,7 @@ pub fn draw(app: *App) !void {
     if (app.replace_open) try r.textUi("Replace", x + w + 12, e.y + 61, t.accent);
 
     var buf: [96]u8 = undefined;
-    const doc = app.workspace.current();
+    const doc = app.workspace.currentOrNull() orelse return;
     const status = if (doc.large != null or doc.buffer.len() > 32 * 1024 * 1024) "Search unavailable for large files" else if (text.len == 0) "" else if (app.search_count == 0) "No matches" else try std.fmt.bufPrint(&buf, "{d}{s} {s} · {s}", .{ app.search_count, if (app.search_capped) "+" else "", if (app.search_count == 1) @as([]const u8, "match") else "matches", if (app.search_case_sensitive) @as([]const u8, "Case") else "ASCII fold" });
     try r.textUi(status, x + w + 12, e.y + 25, t.muted);
 }

@@ -39,21 +39,23 @@ Zid never reads Zed settings or extensions at runtime.
 Settings live in `$XDG_CONFIG_HOME/zid/settings.json` (default
 `~/.config/zid/settings.json`), with key overrides in `keymap.json`. Both accept
 comments and trailing commas and reload after changes. Invalid configuration
-retains the last valid settings. Font-size changes require a restart. Examples
-are in [assets/settings](assets/settings).
+retains the last valid settings. Supported font-size changes apply live. The complete
+upstream default snapshot is in [assets/settings](assets/settings). Ctrl+, opens
+fifteen categories with 727 settings paths (689 explicit defaults and 38 optional values); unsupported feature settings are
+stored, not applied. See [settings parity and remaining gaps](docs/SETTINGS_PARITY.md).
 
 ```json
 {
-  "theme_name": "one_dark",
-  "font_size": 15,
+  "theme": "One Dark",
+  "buffer_font_size": 15,
   "tab_size": 4,
-  "theme": { "accent": [116, 173, 232, 255] }
+  "project_panel": { "dock": "right", "default_width": 240 }
 }
 ```
 
-Theme IDs: `one_dark`, `one_dark_pro_glass`, `ayu`, `gruvbox`, `solarized`,
-`tokyo_night`, `catppuccin`, `vscode`. Explicit color overrides apply over the chosen
-builtin palette.
+Use theme display names such as `One Dark`, `Ayu Dark`, or `Catppuccin Mocha`.
+Legacy Zid theme IDs and color overrides remain readable. Settings UI saves preserve
+unrelated keys, including unsupported settings, but normalize JSON formatting/comments.
 
 | Shortcut | Action |
 | --- | --- |
@@ -67,7 +69,7 @@ builtin palette.
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
 | Ctrl+Shift+R | Reload configuration immediately |
 
-Logs include elapsed time, level and scope on stderr and in
+Logs include aligned UTC wall time, level and scope (colored on terminals) on stderr and in
 `$XDG_STATE_HOME/zid/zid.log` (default `~/.local/state/zid/zid.log`). The log rotates
 at startup past 4 MiB. Set `ZID_LOG=files=debug,app=info` for scoped diagnostics.
 

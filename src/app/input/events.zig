@@ -11,8 +11,9 @@ const settings_dialog = @import("../views/settings_dialog.zig");
 const keymap = @import("../keymap.zig");
 const commands = @import("commands.zig");
 const modals = @import("../views/modals.zig");
+const onboarding = @import("../views/onboarding.zig");
 pub fn event(self: *App, e: sdl.events.Event) !void {
-    const doc = self.workspace.current();
+    const doc = self.workspace.currentOrNull();
     switch (e) {
         .window_focus_gained => {
             self.focused = true;
@@ -24,6 +25,11 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
             self.caret_visible = false;
         },
         .quit, .window_close_requested => try self.runCommand(.@"zed::Quit"),
+        // "theme.mode": "system" follows the desktop; reload to pick the other side.
+        .system_theme_changed => {
+            @import("../config.zig").system_appearance = App.systemAppearanceFromSdl();
+            try self.reloadConfig();
+        },
         .key_down => |key_event| {
             self.suppress_choice_text = false;
             const key = key_event.key orelse return;
@@ -37,11 +43,11 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
                 @import("../database_view.zig").key(self, key, key_event.mod);
                 return;
             }
-            const instance = doc.instance_id;
-            const revision = doc.revision;
-            const cursor = doc.cursor;
+            const instance = if (doc) |d| d.instance_id else 0;
+            const revision = if (doc) |d| d.revision else 0;
+            const cursor = if (doc) |d| d.cursor else 0;
             try dispatchKey(self, key, key_event.mod);
-            const current = self.workspace.current();
+            const current = self.workspace.currentOrNull() orelse return;
             if (current.instance_id != instance or current.revision != revision or current.cursor != cursor) _ = self.dismissHover();
         },
         .key_up => |key_event| {
@@ -62,15 +68,21 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
             if (commands.lineInput(self)) |line| {
                 line.insert(text);
                 try self.lineInputChanged();
-            } else if (self.dialog == .settings) settings_dialog.typeText(self, text) else if (self.dialog == .open or self.dialog == .save) try self.path_input.appendSlice(self.gpa, text) else if (self.dialog == .none and !self.panel_focus) {
+            } else if (self.dialog == .settings) settings_dialog.typeText(self, text) else if (self.dialog == .open or self.dialog == .save) try self.path_input.appendSlice(self.gpa, text) else if (self.dialog == .none and self.prompt == null and self.context_menu == null and !self.panel_focus and !onboarding.isActive(self)) {
                 _ = self.dismissHover();
-                try doc.insert(text);
+                const active = doc orelse return;
+                try active.insert(text);
                 try self.revealCursor();
             }
             self.caret_visible = true;
             self.last_blink = sdl.timer.getMillisecondsSinceInit();
         },
-        .mouse_button_down => |button| if (button.button == .left) {
+        .mouse_button_down => |button| if (button.button == .right) {
+            self.mouse_x = button.x;
+            self.mouse_y = button.y;
+            _ = self.dismissHover();
+            try @import("../menus.zig").rightClick(self, button.x, button.y);
+        } else if (button.button == .left) {
             self.pointer_down = true;
             self.mouse_x = button.x;
             self.mouse_y = button.y;
@@ -78,6 +90,10 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
             try self.click(button.x, button.y, button.clicks);
         },
         .mouse_button_up => {
+            if (self.panel_resizing) {
+                self.panel_resizing = false;
+                try self.saveAndApplySettings();
+            }
             self.pointer_down = false;
             self.dragging = false;
             sdl.mouse.capture(false) catch {};
@@ -85,6 +101,17 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
         .mouse_motion => |motion| {
             self.mouse_x = motion.x;
             self.mouse_y = motion.y;
+            @import("../views/context_menu.zig").hover(self, motion.x, motion.y);
+            // Hovering another name while an application menu is open switches menus.
+            const title_bar = @import("../views/title_bar.zig");
+            if (title_bar.appMenuOpen(self)) |open| if (title_bar.menuNameAt(self, motion.x, motion.y)) |index| {
+                if (index != open) title_bar.openAppMenu(self, index);
+            };
+            if (self.panel_resizing) {
+                const width = if (self.settings.panel_right) self.layout.width - motion.x else motion.x;
+                self.settings.panel_width = @intFromFloat(std.math.clamp(width, 140, @min(600, self.layout.width * 0.8)));
+                return;
+            }
             if (self.dragging) {
                 _ = self.dismissHover();
                 try self.placeCursor(motion.x, motion.y, true);
@@ -112,13 +139,16 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
                 self.panel_scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.panel_scroll)) + delta, 0, @as(i64, @intCast(self.maxPanelScroll()))));
             } else if (self.keymap_editor_open) {
                 modals.scrollKeymap(self, -wheel.scroll_y);
+            } else if (onboarding.isActive(self)) {
+                try onboarding.scroll(self, -wheel.scroll_y * 40);
             } else {
-                if (doc.large) |*large| {
+                const active = doc orelse return;
+                if (active.large) |*large| {
                     try large.moveLines(delta);
                     return;
                 }
-                doc.scroll_line = @intCast(std.math.clamp(@as(i64, @intCast(doc.scroll_line)) + delta, 0, @as(i64, @intCast(doc.lineCount() -| 1))));
-                doc.scroll_x = @max(0, doc.scroll_x - wheel.scroll_x * 30);
+                active.scroll_line = @intCast(std.math.clamp(@as(i64, @intCast(active.scroll_line)) + delta, 0, @as(i64, @intCast(active.lineCount() -| 1))));
+                active.scroll_x = @max(0, active.scroll_x - wheel.scroll_x * 30);
             }
         },
         .drop_file => |drop| {
@@ -237,12 +267,51 @@ pub fn simulate(self: *App, spec: []const u8) !void {
             }
             continue;
         }
+        // `click:X:Y` replays a left click at logical coordinates (offscreen QA).
+        if (std.mem.startsWith(u8, token, "click:")) {
+            var parts = std.mem.splitScalar(u8, token["click:".len..], ':');
+            const x = try std.fmt.parseFloat(f32, parts.next() orelse return error.InvalidSimulatedClick);
+            const y = try std.fmt.parseFloat(f32, parts.next() orelse return error.InvalidSimulatedClick);
+            try self.draw();
+            try self.click(x, y, 1);
+            continue;
+        }
+        // `wait:MS` lets real time pass (tooltip delays, animations).
+        if (std.mem.startsWith(u8, token, "wait:")) {
+            sdl.timer.delayMilliseconds(try std.fmt.parseInt(u32, token["wait:".len..], 10));
+            continue;
+        }
+        // `rclick:X:Y` right-clicks; `move:X:Y` moves the pointer (hover).
+        if (std.mem.startsWith(u8, token, "rclick:") or std.mem.startsWith(u8, token, "move:")) {
+            const right = std.mem.startsWith(u8, token, "rclick:");
+            var parts = std.mem.splitScalar(u8, token[(if (right) "rclick:".len else "move:".len)..], ':');
+            const x = try std.fmt.parseFloat(f32, parts.next() orelse return error.InvalidSimulatedClick);
+            const y = try std.fmt.parseFloat(f32, parts.next() orelse return error.InvalidSimulatedClick);
+            try self.draw();
+            self.mouse_x = x;
+            self.mouse_y = y;
+            if (right) try @import("../menus.zig").rightClick(self, x, y) else {
+                @import("../views/context_menu.zig").hover(self, x, y);
+                const title_bar = @import("../views/title_bar.zig");
+                if (title_bar.appMenuOpen(self)) |open| if (title_bar.menuNameAt(self, x, y)) |index| {
+                    if (index != open) title_bar.openAppMenu(self, index);
+                };
+            }
+            continue;
+        }
         if (std.mem.startsWith(u8, token, "text:")) {
             const text = token["text:".len..];
-            if (self.database.open) self.database.input().insert(text) else if (commands.lineInput(self)) |line| {
+            if (self.dialog == .settings) settings_dialog.typeText(self, text) else if (self.database.open) self.database.input().insert(text) else if (commands.lineInput(self)) |line| {
                 line.insert(text);
                 try self.lineInputChanged();
-            } else try self.workspace.current().insert(text);
+            } else if (!self.panel_focus and !onboarding.isActive(self)) {
+                if (self.workspace.currentOrNull()) |active| try active.insert(text);
+            }
+            continue;
+        }
+        if (self.dialog != .none) {
+            const key: sdl.keycode.Keycode = if (std.mem.eql(u8, token, "enter")) .return_key else std.meta.stringToEnum(sdl.keycode.Keycode, token) orelse return error.UnsupportedSimulatedDialogKey;
+            try self.dialogKey(key);
             continue;
         }
         const ks = try keymap.Keystroke.parse(token);

@@ -13,6 +13,8 @@ const App = @import("../app.zig").App;
 const keymap = @import("../keymap.zig");
 const LineInput = @import("../line_input.zig").LineInput;
 const ed = zid.commands;
+const onboarding = @import("../views/onboarding.zig");
+const wa = @import("../workspace_actions.zig");
 
 pub const Command = enum {
     // workspace / app
@@ -21,12 +23,16 @@ pub const Command = enum {
     @"workspace::SaveAll",
     @"workspace::NewFile",
     @"workspace::OpenFiles",
+    @"workspace::Open",
     @"workspace::ToggleLeftDock",
     @"workspace::CloseWindow",
     @"zed::Quit",
     @"zed::OpenSettings",
     @"zed::OpenSettingsFile",
     @"zed::OpenKeymap",
+    @"zed::OpenOnboarding",
+    @"zed::ShowWelcome",
+    @"onboarding::Finish",
     @"zed::OpenKeymapFile",
     @"zed::IncreaseBufferFontSize",
     @"zed::DecreaseBufferFontSize",
@@ -39,6 +45,8 @@ pub const Command = enum {
     @"projects::OpenRecent",
     @"tab_switcher::Toggle",
     @"project_panel::ToggleFocus",
+    @"project_panel::NewFile",
+    @"project_panel::NewDirectory",
     @"buffer_search::Deploy",
     @"buffer_search::DeployReplace",
     @"search::ToggleReplace",
@@ -53,6 +61,8 @@ pub const Command = enum {
     @"pane::CloseAllItems",
     @"pane::CloseCleanItems",
     @"pane::CloseOtherItems",
+    @"pane::CloseItemsToTheLeft",
+    @"pane::CloseItemsToTheRight",
     @"pane::ActivateNextItem",
     @"pane::ActivatePreviousItem",
     @"pane::ActivateItem",
@@ -65,6 +75,8 @@ pub const Command = enum {
     @"menu::Confirm",
     @"menu::SecondaryConfirm",
     @"menu::Cancel",
+    @"menu::SelectChild",
+    @"menu::SelectParent",
     // project panel
     @"project_panel::CollapseSelectedEntry",
     @"project_panel::ExpandSelectedEntry",
@@ -143,25 +155,30 @@ pub fn parse(name: []const u8) ?Command {
 }
 
 /// Where keyboard focus is; decides availability and the context path.
-pub const Focus = enum { editor, buffer_search, project_panel, picker, go_to_line, keymap_editor, settings, path_dialog };
+pub const Focus = enum { workspace, project_edit, editor, buffer_search, project_panel, picker, go_to_line, keymap_editor, onboarding, prompt, context_menu, settings, path_dialog };
 
 pub fn focus(app: *const App) Focus {
     if (app.dialog == .settings) return .settings;
     if (app.dialog != .none) return .path_dialog;
+    if (app.prompt != null) return .prompt;
+    if (app.context_menu != null) return .context_menu;
     switch (app.modal) {
         .none => {},
         .picker => return .picker,
         .go_to_line => return .go_to_line,
     }
+    if (app.project_edit != null) return .project_edit;
     if (app.keymap_editor_open) return .keymap_editor;
     if (app.panel_focus and app.panel_open) return .project_panel;
+    if (onboarding.isActive(app)) return .onboarding;
     if (app.search_open and app.search_focused) return .buffer_search;
-    return .editor;
+    return if (app.workspace.documents.items.len == 0) .workspace else .editor;
 }
 
 /// The single-line input that receives editor actions when a modal or view has focus.
 pub fn lineInput(app: *App) ?*LineInput {
     return switch (focus(app)) {
+        .project_edit => &app.project_edit.?.input,
         .buffer_search => if (app.replace_focused) &app.replace_input else &app.search_input,
         .picker => &app.modal.picker.input,
         .go_to_line => &app.modal.go_to_line.input,
@@ -177,6 +194,10 @@ pub fn focusPath(app: *App, buf: *[6]keymap.Context, ext_buf: *[16]u8) []keymap.
     n += 1;
     const single_line = &[_][2][]const u8{.{ "mode", "single_line" }};
     switch (focus(app)) {
+        .workspace => {
+            buf[n] = .{ .name = "Pane" };
+            n += 1;
+        },
         .editor => {
             buf[n] = .{ .name = "Pane" };
             n += 1;
@@ -191,6 +212,12 @@ pub fn focusPath(app: *App, buf: *[6]keymap.Context, ext_buf: *[16]u8) []keymap.
             buf[n] = .{ .name = "Pane" };
             n += 1;
             buf[n] = .{ .name = "BufferSearchBar", .flags = if (app.replace_focused) &.{"in_replace"} else &.{} };
+            n += 1;
+            buf[n] = .{ .name = "Editor", .pairs = single_line };
+            n += 1;
+        },
+        .project_edit => {
+            buf[n] = .{ .name = "ProjectPanel", .flags = &.{"editing"} };
             n += 1;
             buf[n] = .{ .name = "Editor", .pairs = single_line };
             n += 1;
@@ -211,6 +238,22 @@ pub fn focusPath(app: *App, buf: *[6]keymap.Context, ext_buf: *[16]u8) []keymap.
             buf[n] = .{ .name = "GoToLine" };
             n += 1;
             buf[n] = .{ .name = "Editor", .pairs = single_line };
+            n += 1;
+        },
+        .prompt => {
+            buf[n] = .{ .name = "Prompt" };
+            n += 1;
+        },
+        .context_menu => {
+            buf[n] = .{ .name = "menu" };
+            n += 1;
+        },
+        .onboarding => {
+            buf[n] = .{ .name = "Pane" };
+            n += 1;
+            // Zed's Onboarding key context also adds the `menu` identifier.
+            const kind = onboarding.activeKind(app) orelse .onboarding;
+            buf[n] = .{ .name = kind.context(), .flags = if (kind == .onboarding) &.{"menu"} else &.{} };
             n += 1;
         },
         .keymap_editor => {
@@ -253,24 +296,28 @@ pub fn available(app: *App, c: Command) bool {
             .@"editor::MoveToBeginning", .@"editor::MoveToEnd", .@"editor::SelectToBeginning", .@"editor::SelectToEnd", .@"editor::SelectAll", .@"editor::Copy", .@"editor::Cancel", .@"editor::MoveUp", .@"editor::LineUp", .@"editor::MoveDown", .@"editor::LineDown", .@"editor::MovePageUp", .@"editor::PageUp", .@"editor::MovePageDown", .@"editor::PageDown", .@"editor::MoveToBeginningOfLine", .@"editor::SelectToBeginningOfLine", .@"editor::MoveToEndOfLine", .@"editor::SelectToEndOfLine", .@"editor::MoveLeft", .@"editor::MoveRight", .@"editor::SelectLeft", .@"editor::SelectRight" => true,
             else => false,
         },
-        .picker, .go_to_line, .keymap_editor, .buffer_search => lineInputCommand(c),
+        .project_edit, .picker, .go_to_line, .keymap_editor, .buffer_search => lineInputCommand(c),
         else => false,
     };
     if (isMenu(c)) return switch (f) {
-        .picker, .keymap_editor => c != .@"menu::SecondaryConfirm",
-        .go_to_line => c == .@"menu::Confirm" or c == .@"menu::Cancel",
+        .picker, .keymap_editor => c != .@"menu::SecondaryConfirm" and c != .@"menu::SelectChild" and c != .@"menu::SelectParent",
+        .prompt => c != .@"menu::SelectChild" and c != .@"menu::SelectParent",
+        .context_menu => true,
+        .project_edit, .go_to_line => c == .@"menu::Confirm" or c == .@"menu::Cancel",
         .project_panel => c == .@"menu::SelectNext" or c == .@"menu::SelectPrevious" or c == .@"menu::Cancel" or c == .@"menu::Confirm" or c == .@"menu::SelectFirst" or c == .@"menu::SelectLast",
         else => false,
     };
     return switch (c) {
         .@"buffer_search::Deploy", .@"buffer_search::DeployReplace" => f == .editor or f == .buffer_search,
         .@"search::ToggleReplace", .@"search::ToggleCaseSensitive" => f == .buffer_search,
-        .@"search::ReplaceNext" => f == .buffer_search and app.replace_open and !app.docPreview() and app.workspace.current().large == null,
+        .@"search::ReplaceNext" => f == .buffer_search and app.replace_open and !app.docPreview() and app.workspace.currentOrNull() != null and app.workspace.current().large == null,
         .@"buffer_search::Dismiss", .@"search::FocusSearch" => f == .buffer_search,
         .@"search::SelectNextMatch", .@"search::SelectPreviousMatch" => f == .editor or f == .buffer_search,
+        .@"project_panel::NewFile", .@"project_panel::NewDirectory" => f == .project_panel,
         .@"project_panel::CollapseSelectedEntry", .@"project_panel::ExpandSelectedEntry", .@"project_panel::CollapseAllEntries", .@"project_panel::Open" => f == .project_panel,
         .@"go_to_line::Toggle" => f == .editor or f == .go_to_line,
-        .@"pane::ActivateItem", .@"pane::ActivateLastItem", .@"pane::ActivateNextItem", .@"pane::ActivatePreviousItem", .@"pane::CloseActiveItem", .@"pane::CloseAllItems", .@"pane::CloseCleanItems", .@"pane::CloseOtherItems" => f == .editor or f == .project_panel or f == .keymap_editor,
+        .@"onboarding::Finish" => onboarding.activeKind(app) == .onboarding,
+        .@"pane::ActivateItem", .@"pane::ActivateLastItem", .@"pane::ActivateNextItem", .@"pane::ActivatePreviousItem", .@"pane::CloseActiveItem", .@"pane::CloseAllItems", .@"pane::CloseCleanItems", .@"pane::CloseOtherItems", .@"pane::CloseItemsToTheLeft", .@"pane::CloseItemsToTheRight" => f == .editor or f == .project_panel or f == .keymap_editor or f == .onboarding,
         else => true,
     };
 }
@@ -292,9 +339,9 @@ fn argBool(arg: ?std.json.Value, key: []const u8, default: bool) bool {
 /// Runs a command. `arg` is the Zed action argument from the binding, if any.
 pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
     if (lineInput(app)) |input| if (isEditor(c)) return runLineInput(app, input, c);
-    const doc = app.workspace.current();
-    if (doc.large != null and isEditor(c)) {
-        const l = &doc.large.?;
+    const doc = app.workspace.currentOrNull();
+    if (doc != null and doc.?.large != null and isEditor(c)) {
+        const l = &doc.?.large.?;
         const page: i64 = @intCast(app.pageLines());
         switch (c) {
             .@"editor::MoveToBeginning" => l.move(0, false),
@@ -320,7 +367,7 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
         }
         return;
     }
-    if (doc.large != null and c == .@"workspace::SaveAs") return error.ReadOnlyLargeFile;
+    if (doc != null and doc.?.large != null and c == .@"workspace::SaveAs") return error.ReadOnlyLargeFile;
     const page: i32 = @intCast(app.pageLines());
     switch (c) {
         .@"buffer_search::Deploy", .@"search::FocusSearch" => {
@@ -356,11 +403,14 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
         .@"search::SelectNextMatch" => try app.searchSelect(.next),
         .@"search::SelectPreviousMatch" => try app.searchSelect(.previous),
         .@"workspace::Save" => {
-            if (doc.path == null) return app.pathDialog(.save);
+            if (doc == null) return;
+            if (doc.?.path == null) return wa.saveAs(app, false, false);
             try app.workspace.save(null);
-            app.notice("Saved {s}", .{doc.path.?});
+            app.notice("Saved {s}", .{doc.?.path.?});
         },
-        .@"workspace::SaveAs" => try app.pathDialog(.save),
+        .@"workspace::SaveAs" => if (doc != null) {
+            try wa.saveAs(app, false, false);
+        },
         .@"workspace::SaveAll" => {
             const active = app.workspace.active;
             defer app.workspace.active = active;
@@ -376,25 +426,27 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
             if (skipped > 0) app.notice("Saved all; {d} untitled document(s) need Save As", .{skipped}) else app.notice("Saved all", .{});
         },
         .@"workspace::NewFile" => {
+            onboarding.deactivate(app);
             try app.workspace.newDocument();
             app.panel_focus = false;
             app.keymap_editor_open = false;
         },
-        .@"workspace::OpenFiles" => try app.pathDialog(.open),
+        .@"workspace::OpenFiles" => try wa.openFiles(app),
+        // "Open Folder..." on Linux; the in-window fallback dialog accepts both.
+        .@"workspace::Open" => try wa.openFolder(app),
         .@"workspace::ToggleLeftDock" => {
             app.panel_open = !app.panel_open;
             app.panel_focus = false;
         },
         .@"workspace::CloseWindow", .@"zed::Quit" => {
-            for (app.workspace.documents.items) |*d| if (d.dirty()) {
-                app.dialog = .quit;
-                return;
-            };
-            app.running = false;
+            try wa.quit(app);
         },
         .@"zed::OpenSettings" => @import("../views/settings_dialog.zig").open(app),
         .@"zed::OpenSettingsFile" => try app.openConfigFile("settings.json"),
         .@"zed::OpenKeymap" => try app.openKeymapEditor(),
+        .@"zed::OpenOnboarding" => onboarding.openOnboarding(app),
+        .@"zed::ShowWelcome" => onboarding.showWelcome(app),
+        .@"onboarding::Finish" => onboarding.finish(app),
         .@"zed::OpenKeymapFile" => try app.openConfigFile("keymap.json"),
         .@"zed::IncreaseBufferFontSize", .@"zed::DecreaseBufferFontSize", .@"zed::ResetBufferFontSize" => {
             const current = app.settings.font_size;
@@ -434,34 +486,29 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
                 app.keymap_editor_open = false;
                 return;
             }
-            if (doc.dirty()) app.dialog = .close else try app.workspace.closeActive();
-            app.syntax_doc = std.math.maxInt(usize);
-        },
-        .@"pane::CloseAllItems", .@"pane::CloseCleanItems", .@"pane::CloseOtherItems" => {
-            const keep = app.workspace.active;
-            var i = app.workspace.documents.items.len;
-            var kept_dirty: usize = 0;
-            while (i > 0) {
-                i -= 1;
-                if (c == .@"pane::CloseOtherItems" and i == keep) continue;
-                app.workspace.active = i;
-                if (app.workspace.current().dirty()) {
-                    kept_dirty += 1;
-                    continue;
-                }
-                try app.workspace.closeActive();
+            if (onboarding.isActive(app)) {
+                onboarding.close(app);
+                return;
             }
-            app.workspace.active = @min(app.workspace.active, app.workspace.documents.items.len - 1);
-            app.syntax_doc = std.math.maxInt(usize);
-            if (kept_dirty > 0 and c != .@"pane::CloseCleanItems") app.notice("{d} unsaved document(s) kept open", .{kept_dirty});
+            if (doc == null) return;
+            try wa.closeItem(app, app.workspace.active);
         },
-        .@"pane::ActivateNextItem" => app.workspace.active = (app.workspace.active + 1) % app.workspace.documents.items.len,
-        .@"pane::ActivatePreviousItem" => app.workspace.active = (app.workspace.active + app.workspace.documents.items.len - 1) % app.workspace.documents.items.len,
+        .@"pane::CloseAllItems" => try wa.closeTabs(app, .all, app.workspace.active),
+        .@"pane::CloseCleanItems" => try wa.closeTabs(app, .clean, app.workspace.active),
+        .@"pane::CloseOtherItems" => try wa.closeTabs(app, .others, app.workspace.active),
+        .@"pane::CloseItemsToTheLeft" => try wa.closeTabs(app, .left, app.workspace.active),
+        .@"pane::CloseItemsToTheRight" => try wa.closeTabs(app, .right, app.workspace.active),
+        .@"pane::ActivateNextItem" => if (doc != null) {
+            app.workspace.active = (app.workspace.active + 1) % app.workspace.documents.items.len;
+        },
+        .@"pane::ActivatePreviousItem" => if (doc != null) {
+            app.workspace.active = (app.workspace.active + app.workspace.documents.items.len - 1) % app.workspace.documents.items.len;
+        },
         .@"pane::ActivateItem" => if (argInt(arg)) |i| {
             if (i < app.workspace.documents.items.len) app.workspace.active = i;
         },
-        .@"pane::ActivateLastItem" => app.workspace.active = app.workspace.documents.items.len - 1,
-        .@"menu::SelectNext", .@"menu::SelectPrevious", .@"menu::SelectFirst", .@"menu::SelectLast", .@"menu::Confirm", .@"menu::SecondaryConfirm", .@"menu::Cancel" => try app.menuCommand(c),
+        .@"pane::ActivateLastItem" => app.workspace.active = app.workspace.documents.items.len -| 1,
+        .@"menu::SelectNext", .@"menu::SelectPrevious", .@"menu::SelectFirst", .@"menu::SelectLast", .@"menu::Confirm", .@"menu::SecondaryConfirm", .@"menu::Cancel", .@"menu::SelectChild", .@"menu::SelectParent" => try app.menuCommand(c),
         .@"project_panel::CollapseSelectedEntry" => try app.collapseOrParentProject(),
         .@"project_panel::ExpandSelectedEntry" => try app.expandOrEnterProject(),
         .@"project_panel::CollapseAllEntries" => {
@@ -472,7 +519,9 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
             app.panel_row = 0;
         },
         .@"project_panel::Open" => try app.activateProject(),
-        else => try runEditor(app, doc, c, arg, page),
+        .@"project_panel::NewFile" => try @import("../project_edit.zig").begin(app, false),
+        .@"project_panel::NewDirectory" => try @import("../project_edit.zig").begin(app, true),
+        else => try runEditor(app, doc orelse return, c, arg, page),
     }
     app.tabs_first = @min(app.tabs_first, app.workspace.active);
     if (focus(app) == .project_panel) app.keepPanelVisible();

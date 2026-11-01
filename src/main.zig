@@ -2,12 +2,15 @@ const std = @import("std");
 const zid = @import("zid");
 const smoke = @import("platform/smoke.zig");
 const logging = @import("core/log.zig");
+const sdl = @import("sdl3");
 pub const std_options: std.Options = .{ .logFn = logging.logFn, .log_level = .debug };
 const App = @import("app/app.zig").App;
 
 pub fn main(init: std.process.Init) !void {
-    logging.init(init.gpa, init.io, init.environ_map) catch |err| std.debug.print("Log file unavailable: {s}\n", .{@errorName(err)});
+    logging.init(init.gpa, init.io, init.environ_map) catch |err| std.log.warn("Log file unavailable: {s}", .{@errorName(err)});
     defer logging.deinit();
+    sdl.log.setLogOutputFunction(void, &sdl.extras.loggers.zigLog, null);
+    defer sdl.log.setLogOutputFunction(void, null, null);
     std.log.info("Zid startup (Zig {s})", .{@import("builtin").zig_version_string});
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const png = @import("util/png.zig");
@@ -19,16 +22,18 @@ pub fn main(init: std.process.Init) !void {
     var open_settings: ?usize = null;
     var forced_scale: ?f32 = null;
     var keys: ?[]const u8 = null;
+    var show_onboarding = false;
+    var show_welcome = false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const s = args[i];
         if (std.mem.eql(u8, s, "--check")) {
             try smoke.check(init.gpa);
-            std.debug.print("OK: headless SDL3, FreeType, HarfBuzz and Zafi integration\n", .{});
+            std.log.info("OK: headless SDL3, FreeType, HarfBuzz and Zafi integration", .{});
             return;
         } else if (std.mem.eql(u8, s, "--help")) {
-            std.debug.print("Zid\n  zid [file-or-directory]  Open editor\n  zid --check              Headless dependency smoke check\n  zid --screenshot <path> [--size WxH] [--frames N] [--settings[=page]] [--scale F] [--keys KEYS]\n\nCtrl+O open · Ctrl+S save · Ctrl+N new · Ctrl+W close · Ctrl+B project panel\n", .{});
+            std.debug.print("Zid\n  zid [file-or-directory]  Open editor\n  zid --check              Headless dependency smoke check\n  zid --screenshot <path> [--size WxH] [--frames N] [--settings[=page]] [--onboarding|--welcome] [--scale F] [--keys KEYS]\n\nCtrl+O open · Ctrl+S save · Ctrl+N new · Ctrl+W close · Ctrl+B project panel\n", .{});
             return;
         } else if (std.mem.eql(u8, s, "--screenshot") and i + 1 < args.len) {
             i += 1;
@@ -47,6 +52,10 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, s, "--scale") and i + 1 < args.len) {
             i += 1;
             forced_scale = try std.fmt.parseFloat(f32, args[i]);
+        } else if (std.mem.eql(u8, s, "--onboarding")) {
+            show_onboarding = true;
+        } else if (std.mem.eql(u8, s, "--welcome")) {
+            show_welcome = true;
         } else if (std.mem.eql(u8, s, "--settings")) {
             open_settings = 0;
         } else if (std.mem.startsWith(u8, s, "--settings=")) {
@@ -67,7 +76,6 @@ pub fn main(init: std.process.Init) !void {
     defer workspace.deinit();
     try workspace.scan();
     if (stat.kind == .file) try workspace.open(path) else if (stat.kind != .directory) return error.NotRegularFile;
-    if (workspace.documents.items.len == 0) try workspace.newDocument();
     var app = try App.initWithOptions(init.gpa, init.io, &workspace, init.environ_map, win_w, win_h, screenshot_path != null);
     defer app.deinit();
 
@@ -76,6 +84,11 @@ pub fn main(init: std.process.Init) !void {
         try app.runCommand(.@"zed::OpenSettings");
         app.settings_category = page;
     }
+    // Screenshots stay deterministic: only `--onboarding` opens the page there.
+    const onboarding = @import("app/views/onboarding.zig");
+    // A stored zed.dev session signs back in (screenshots stay offline and deterministic).
+    if (screenshot_path == null) app.account.restore(&app);
+    if (show_welcome) onboarding.showWelcome(&app) else if (show_onboarding) onboarding.openOnboarding(&app) else if (screenshot_path == null) onboarding.showOnFirstOpen(&app);
     if (keys) |spec| {
         try app.draw(); // establish layout before replaying keys
         try @import("app/input/events.zig").simulate(&app, spec);

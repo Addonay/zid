@@ -1,4 +1,4 @@
-# Module plan
+## Module plan
 
 Zid is one application with a headless core, platform services, and a presentation
 layer. Features grow inside these boundaries; they do not become additions to one
@@ -6,7 +6,7 @@ application file. Planned directories are introduced when they contain real code
 
 | Directory | Owns | May depend on |
 | --- | --- | --- |
-| `core/` | logging, jobs, mailbox, IDs, cancellation, configuration primitives | Zig standard library |
+| `core/` | logging, jobs, mailbox, IDs, cancellation, configuration primitives, RSA (`rsa.zig`, zed.dev sign-in) | Zig standard library |
 | `sum_tree/` | Port of Zed's `sum_tree`: persistent refcounted B+ tree, cursors, keyed edits | standard library |
 | `rope/` | Port of Zed's `rope`: chunked UTF-8 text over `sum_tree` with offset/point/UTF-16 dimensions | sum_tree, standard library |
 | `text/` | byte sources, piece tree, snapshots, indexing, Unicode, history | core, standard library |
@@ -14,9 +14,9 @@ application file. Planned directories are introduced when they contain real code
 | `syntax/` | incremental lexers, checkpoint state, later structure | text, core, standard library |
 | `project/` (planned) | file tree, watches, fuzzy search, project metadata | editor IDs, core, filesystem interface |
 | `app/` | application ownership, scheduling, configuration and action routing; database worker and viewer | headless modules, platform, gfx |
-| `app/views/` | title bar, files, tabs, editor, status, dialogs, settings, pickers (`picker_view`, `modals`), buffer search, keymap editor | application view state, gfx, layout |
+| `app/views/` | title bar, files, tabs, editor, status, dialogs, settings, pickers (`picker_view`, `modals`), buffer search, keymap editor, onboarding, context menus, prompts, tooltips | application view state, gfx, layout |
 | `app/input/` | event translation, keymap dispatch (`events`), Zed action registry and focus contexts (`commands`), picker controllers (`pickers`) | app actions, typed SDL events |
-| `app/` (pure helpers) | `keymap` (Zed keymap parse/resolve), `fuzzy`, `line_input`, `recent_projects`, `icon_theme`, `text_match`, `settings_helpers` | standard library only; tested by `test-ui` |
+| `app/` (pure helpers) | `keymap` (Zed keymap parse/resolve), `fuzzy`, `line_input`, `recent_projects`, `icon_theme`, `text_match`, `settings_helpers`, `settings_document` (owned JSON values, explicit-Io atomic persistence), `title_info` (Git HEAD metadata), `zed_auth` (zed.dev sign-in protocol) | standard library only; tested by `test-ui` |
 | `util/` | dependency-free encoders (PNG for `--screenshot`) | standard library |
 | `app/config/` (planned) | settings, keymap and theme registry | standard library; no SDL |
 | `gfx/` | GPU pipelines, batching, clipping, glyph/icon atlas | typed zig-sdl3 GPU, font/SVG raster interfaces |

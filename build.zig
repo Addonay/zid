@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const sdl = b.dependency("sdl3", .{ .target = target, .optimize = optimize });
     patchSdl(b, sdl);
     const core = b.addModule("zid", .{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
-    const app = b.createModule(.{ .root_source_file = b.path("src/main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    const app = b.createModule(.{ .root_source_file = b.path("src/main.zig"), .target = target, .optimize = optimize, .link_libc = true, .strip = (optimize == .debug) });
     app.addImport("zid", core);
     app.addImport("sdl3", sdl.module("sdl3"));
     app.addImport("zafi", zafi.module("zafi"));
@@ -14,12 +14,23 @@ pub fn build(b: *std.Build) void {
     app.addAnonymousImport("icons", .{ .root_source_file = b.path("assets/icons.zig") });
     app.linkSystemLibrary("freetype2", .{});
     app.linkSystemLibrary("harfbuzz", .{});
-    app.addCSourceFile(.{ .file = b.path("src/platform/font.c"), .flags = &.{"-std=c23"} });
+    // nanosvg casts dx/dy of near-horizontal edges to int (upstream behaviour);
+    // Debug UBSan would trap on harmless overflow while rasterizing Zed icons.
+    app.addCSourceFile(.{ .file = b.path("src/platform/font.c"), .flags = &.{ "-std=c23", "-fno-sanitize=float-cast-overflow" } });
     app.linkSystemLibrary("m", .{});
     app.addAnonymousImport("theme_assets", .{ .root_source_file = b.path("assets/themes.zig") });
+    app.addAnonymousImport("settings_assets", .{ .root_source_file = b.path("assets/settings.zig") });
     app.addAnonymousImport("keymap_assets", .{ .root_source_file = b.path("assets/keymaps.zig") });
     app.addAnonymousImport("icon_theme_assets", .{ .root_source_file = b.path("assets/icon_themes/catppuccin_latte.zig") });
-    const exe = b.addExecutable(.{ .name = "zid", .root_module = app });
+
+    const name = switch (optimize) {
+        .debug => "zid",
+        .fast => "zid-fast",
+        .safe => "zid-safe",
+        .small => "zid-small"
+    };
+
+    const exe = b.addExecutable(.{ .name = name, .root_module = app });
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();
@@ -36,6 +47,7 @@ pub fn build(b: *std.Build) void {
     ui_tests.addAnonymousImport("icons", .{ .root_source_file = b.path("assets/icons.zig") });
     b.step("test-ui", "Test shell layout and configuration").dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = ui_tests })).step);
     ui_tests.addAnonymousImport("theme_assets", .{ .root_source_file = b.path("assets/themes.zig") });
+    ui_tests.addAnonymousImport("settings_assets", .{ .root_source_file = b.path("assets/settings.zig") });
     ui_tests.addAnonymousImport("keymap_assets", .{ .root_source_file = b.path("assets/keymaps.zig") });
     ui_tests.addAnonymousImport("icon_theme_assets", .{ .root_source_file = b.path("assets/icon_themes/catppuccin_latte.zig") });
     const smoke = b.addRunArtifact(exe);

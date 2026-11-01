@@ -23,6 +23,16 @@ pub const Layout = struct {
     width: f32 = 0,
     height: f32 = 0,
     panel_width: f32 = -1,
+    panel_right: bool = false,
+    status_visible: bool = true,
+    pub fn configure(self: *Layout, panel_right: bool, status_visible: bool) !void {
+        if (self.panel_right == panel_right and self.status_visible == status_visible) return;
+        try self.tree.set_style(self.body, .{ .flex_direction = if (panel_right) .row_reverse else .row, .flex_grow = 1, .min_size = .{ .width = .length(0), .height = .length(0) } });
+        try self.tree.set_style(self.status, .{ .size = .{ .width = .auto, .height = .length(if (status_visible) 26 else 0) }, .flex_shrink = 0 });
+        self.panel_right = panel_right;
+        self.status_visible = status_visible;
+        self.panel_width = -1;
+    }
     pub fn init(gpa: std.mem.Allocator) !Layout {
         var tree = zafi.Tree.init(gpa);
         errdefer tree.deinit();
@@ -64,6 +74,20 @@ pub const Layout = struct {
         return result;
     }
 };
+test "right docking and hidden status recompute layout at unchanged window size" {
+    var l = try Layout.init(std.testing.allocator);
+    defer l.deinit();
+    try l.resize(1000, 700, 240);
+    try l.configure(true, false);
+    try l.resize(1000, 700, 240);
+    const panel = try l.rect(l.panel);
+    const editor = try l.rect(l.editor);
+    try std.testing.expectEqual(@as(f32, 760), panel.x);
+    try std.testing.expectEqual(@as(f32, 0), editor.x);
+    try std.testing.expectEqual(@as(f32, 634), editor.h);
+    try std.testing.expectEqual(@as(f32, 0), (try l.rect(l.status)).h);
+}
+
 test "shell resizes and hides project panel without overlapping status" {
     var l = try Layout.init(std.testing.allocator);
     defer l.deinit();

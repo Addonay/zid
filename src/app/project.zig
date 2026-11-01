@@ -65,18 +65,25 @@ const Node = struct {
     }
 };
 
+pub const SortMode = enum { directories_first, mixed, files_first };
+pub const Options = struct { directories: []const []u8 = &.{}, auto_fold_dirs: bool = true, sort_mode: SortMode = .directories_first };
+
 pub const Project = struct {
     allocator: std.mem.Allocator,
     entries: std.ArrayList(Entry) = .empty,
 
     pub fn init(gpa: std.mem.Allocator, files: []const []u8) !Project {
+        return initWithOptions(gpa, files, .{});
+    }
+    pub fn initWithOptions(gpa: std.mem.Allocator, files: []const []u8, options: Options) !Project {
         var self: Project = .{ .allocator = gpa };
         errdefer self.deinit();
 
         var root = try Node.init(gpa, "", "", true);
         defer root.deinit(gpa);
 
-        for (files) |file| {
+        for (0..files.len + options.directories.len) |path_index| {
+            const file = if (path_index < files.len) files[path_index] else options.directories[path_index - files.len];
             var cur = &root;
             var it = std.mem.splitScalar(u8, file, '/');
             var path_buf: std.ArrayList(u8) = .empty;
@@ -87,7 +94,7 @@ pub const Project = struct {
                 if (path_buf.items.len > 0) try path_buf.append(gpa, '/');
                 try path_buf.appendSlice(gpa, part);
 
-                const is_file = (it.index == null or it.index.? >= file.len);
+                const is_file = !std.mem.endsWith(u8, file, "/") and (it.index == null or it.index.? >= file.len);
                 var found: ?*Node = null;
                 for (cur.children.items) |*child| {
                     if (std.mem.eql(u8, child.name, part) and child.is_dir != is_file) {
@@ -106,8 +113,8 @@ pub const Project = struct {
             }
         }
 
-        try autoFold(&root, gpa);
-        sortNode(&root);
+        if (options.auto_fold_dirs) try autoFold(&root, gpa);
+        sortNode(&root, options.sort_mode);
 
         const count = root.children.items.len;
         for (root.children.items, 0..) |*child, i| {
@@ -125,7 +132,7 @@ pub const Project = struct {
         if (node.full_path.len > 0 and node.is_dir) {
             while (node.children.items.len == 1 and node.children.items[0].is_dir) {
                 const child = &node.children.items[0];
-                const combined_name = try std.fmt.allocPrint(gpa, "{s} / {s}", .{ node.name, child.name });
+                const combined_name = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ node.name, child.name });
                 gpa.free(node.name);
                 node.name = combined_name;
 
@@ -140,15 +147,15 @@ pub const Project = struct {
         }
     }
 
-    fn sortNode(node: *Node) void {
-        std.mem.sort(Node, node.children.items, {}, struct {
-            fn less(_: void, a: Node, b: Node) bool {
-                if (a.is_dir != b.is_dir) return a.is_dir and !b.is_dir;
+    fn sortNode(node: *Node, mode: SortMode) void {
+        std.mem.sort(Node, node.children.items, mode, struct {
+            fn less(sort_mode: SortMode, a: Node, b: Node) bool {
+                if (a.is_dir != b.is_dir and sort_mode != .mixed) return if (sort_mode == .directories_first) a.is_dir else !a.is_dir;
                 return naturalLessThan(a.name, b.name);
             }
         }.less);
         for (node.children.items) |*child| {
-            sortNode(child);
+            sortNode(child, mode);
         }
     }
 
@@ -226,6 +233,15 @@ test "project collapse and allocation ownership" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationScenario, .{});
 }
 
+test "directory folding can be disabled and sort mode changes entry order" {
+    var files = [_][]u8{ @constCast("a/b/file.zig"), @constCast("README.md") };
+    var project = try Project.initWithOptions(std.testing.allocator, &files, .{ .auto_fold_dirs = false, .sort_mode = .files_first });
+    defer project.deinit();
+    try std.testing.expectEqualStrings("README.md", project.entries.items[0].name);
+    try std.testing.expectEqualStrings("a", project.entries.items[1].name);
+    try std.testing.expectEqualStrings("b", project.entries.items[2].name);
+}
+
 test "project auto-folds single child directories and sorts dirs before files" {
     const files = [_][]const u8{ "docs/guide/start.md", "README.md", "assets/icons/zig.svg", "build.zig" };
     var files_mut: [files.len][]u8 = undefined;
@@ -235,9 +251,9 @@ test "project auto-folds single child directories and sorts dirs before files" {
 
     // Check that directories come first: assets and docs come before README.md and build.zig
     try std.testing.expect(project.entries.items[0].directory); // assets / icons
-    try std.testing.expectEqualStrings("assets / icons", project.entries.items[0].name);
+    try std.testing.expectEqualStrings("assets/icons", project.entries.items[0].name);
     try std.testing.expectEqualStrings("assets/icons", project.entries.items[0].path);
 
-    try std.testing.expectEqualStrings("docs / guide", project.entries.items[2].name);
+    try std.testing.expectEqualStrings("docs/guide", project.entries.items[2].name);
     try std.testing.expectEqualStrings("docs/guide", project.entries.items[2].path);
 }

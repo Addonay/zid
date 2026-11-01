@@ -10,7 +10,7 @@ const max_line_bytes = 64 * 1024;
 pub fn pathDialog(self: *App, kind: @FieldType(App, "dialog")) !void {
     self.path_input.clearRetainingCapacity();
     if (kind == .save) {
-        try self.path_input.appendSlice(self.gpa, self.workspace.current().path orelse "");
+        if (self.workspace.currentOrNull()) |doc| try self.path_input.appendSlice(self.gpa, doc.path orelse "");
     }
     self.dialog = kind;
 }
@@ -30,7 +30,12 @@ pub fn dialogKey(self: *App, key: sdl.keycode.Keycode) !void {
             while (n > 0 and self.path_input.items[n] & 0xc0 == 0x80) n -= 1;
             self.path_input.shrinkRetainingCapacity(n);
         } else if (key == .return_key and self.path_input.items.len > 0) {
-            if (self.dialog == .open) try self.workspace.open(self.path_input.items) else {
+            if (self.dialog == .open) {
+                const requested = try std.fs.path.resolve(self.gpa, &.{ self.workspace.root, self.path_input.items });
+                defer self.gpa.free(requested);
+                const stat = try std.Io.Dir.cwd().statFile(self.io, requested, .{});
+                if (stat.kind == .directory) try self.openProject(requested) else try self.workspace.open(self.path_input.items);
+            } else {
                 // Existing targets require an explicit overwrite choice.
                 const requested = try std.fs.path.resolve(self.gpa, &.{ self.workspace.root, self.path_input.items });
                 defer self.gpa.free(requested);

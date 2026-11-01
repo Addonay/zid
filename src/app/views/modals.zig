@@ -39,7 +39,10 @@ pub fn drawModal(app: *App) !void {
     switch (app.modal) {
         .none => {},
         .go_to_line => |*g| {
-            const doc = app.workspace.current();
+            const doc = app.workspace.currentOrNull() orelse {
+                app.closeModal();
+                return;
+            };
             const row = doc.lineOf(doc.cursor);
             const footer = if (doc.large != null) "Line, b<offset>, or percentage (e.g. 50%)" else try std.fmt.allocPrint(arena, "Current Line: {d} of {d} (column {d})", .{ row + 1, doc.lineCount(), doc.cursor - doc.lineStart(row) + 1 });
             try picker_view.drawGoToLine(&app.renderer, app.settings.theme, window(app), &g.input, footer, app.caret_visible);

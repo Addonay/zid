@@ -222,7 +222,7 @@ const Parser = struct {
 
 // ---------------------------------------------------------------- keymap
 
-pub const Source = enum { default, user };
+pub const Source = enum { default, base, vim, user };
 
 pub const Binding = struct {
     chord: Chord,
@@ -391,6 +391,21 @@ test "context predicates follow Zed precedence and descendant semantics" {
     try testing.expect((try Predicate.parse(a, "!Terminal")).eval(&path));
     try testing.expect((try Predicate.parse(a, "Editor && (extension == md || extension == zig)")).eval(&path));
     try testing.expect((try Predicate.parse(a, "Pane")).eval(path[0..2]));
+}
+
+test "supplied Zed platform, base, Vim and override keymaps load unchanged" {
+    const assets = @import("keymap_assets");
+    for (std.enums.values(assets.BaseKeymap)) |base| {
+        var map = Keymap.init(std.testing.allocator);
+        defer map.deinit();
+        if (base != .None) {
+            try map.load(assets.platform_default, .default);
+            if (assets.base(base)) |bytes| try map.load(bytes, .base);
+            try map.load(assets.vim, .vim);
+            try map.load(assets.specific_overrides, .default);
+        }
+        if (base == .None) try std.testing.expectEqual(@as(usize, 0), map.bindings.items.len) else try std.testing.expect(map.bindings.items.len > 100);
+    }
 }
 
 test "the bundled Zed keymap loads and resolves by depth and order" {

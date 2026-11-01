@@ -30,5 +30,5 @@ pub fn file(name: Name, path: []const u8) Icon {
 
 pub fn folder(name: Name, dir_name: []const u8, expanded: bool) Icon {
     if (name == .catppuccin_latte) return .{ .svg = latte.directoryIcon(dir_name, expanded), .colored = true };
-    return .{ .svg = icons.svg(if (expanded) "folder_open" else "folder") };
+    return .{ .svg = icons.svg(if (expanded) "icons/file_icons/folder_open.svg" else "icons/file_icons/folder.svg") };
 }

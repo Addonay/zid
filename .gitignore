@@ -2,3 +2,7 @@
 zig-out/
 zig-pkg/
 .ref/
+.config/
+zed-linux-x86_64
+.agents
+.zid*

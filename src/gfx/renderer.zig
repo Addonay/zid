@@ -6,7 +6,36 @@ const Face = @import("../platform/font.zig").Face;
 const assets = @import("assets");
 extern fn zid_svg_alpha([*]const u8, usize, c_int, [*]u8) c_int;
 extern fn zid_svg_rgba([*]const u8, usize, c_int, [*]u8) c_int;
-const FontStyle = enum(u8) { mono, italic, ui, ui_small };
+const FontStyle = enum(u8) { mono, italic, ui, ui_small, ui_small_italic, headline, headline_medium, ui_xsmall, mono_xsmall };
+/// Fixed-size faces beyond the editor and primary UI faces (Zed `LabelSize` /
+/// `HeadlineSize` steps). Indexed by `@intFromEnum(style) - first_extra`.
+const ExtraFace = struct { style: FontStyle, px: u32, italic: bool = false, mono: bool = false };
+const extra_faces = [_]ExtraFace{
+    .{ .style = .ui_small_italic, .px = 12, .italic = true }, // LabelSize::Small italic
+    .{ .style = .headline, .px = 16 }, // HeadlineSize::Small
+    .{ .style = .headline_medium, .px = 18 }, // HeadlineSize::Medium (Headline default)
+    .{ .style = .ui_xsmall, .px = 10 }, // LabelSize::XSmall
+    .{ .style = .mono_xsmall, .px = 10, .mono = true }, // LabelSize::XSmall with buffer_font
+};
+const first_extra = @intFromEnum(FontStyle.ui_small_italic);
+comptime {
+    for (extra_faces, 0..) |entry, i| if (@intFromEnum(entry.style) != first_extra + i) @compileError("extra_faces order must follow FontStyle");
+}
+fn extraBytes(entry: ExtraFace) []const u8 {
+    if (entry.mono) return assets.mono;
+    if (entry.italic) return if (@hasDecl(assets, "ui_italic")) assets.ui_italic else assets.mono;
+    return if (@hasDecl(assets, "ui")) assets.ui else assets.mono;
+}
+fn initExtras(scale_px: anytype, ctx: anytype) ![extra_faces.len]Face {
+    var faces: [extra_faces.len]Face = undefined;
+    var made: usize = 0;
+    errdefer for (faces[0..made]) |f| f.deinit();
+    for (extra_faces, 0..) |entry, i| {
+        faces[i] = try Face.initBytes(extraBytes(entry), scale_px(ctx, entry.px));
+        made += 1;
+    }
+    return faces;
+}
 const side = 1024;
 const max_vertices = 196608;
 /// Colored (multi-color icon theme) atlas: 16x16 cells of 32px RGBA.
@@ -15,6 +44,7 @@ const color_bytes = color_side * color_side * 4;
 /// Zed's default UI label size (`LabelSize::Default`, 14px) and `LabelSize::Small` (12px).
 pub const ui_font_px = 14;
 pub const ui_small_font_px = 12;
+/// Zed `HeadlineSize::Small` (`rems(1.0)` = 16px).
 const Vertex = extern struct { x: f32, y: f32, u: f32, v: f32, color: [4]u8 };
 const Glyph = struct { style: FontStyle = .mono, index: u32 = 0, stamp: u32 = 0, valid: bool = false, left: i32 = 0, top: i32 = 0, w: u32 = 0, h: u32 = 0 };
 const Icon = struct { hash: u64 = 0, len: usize = 0, size: u8 = 0, stamp: u32 = 0, valid: bool = false };
@@ -36,6 +66,7 @@ pub const Renderer = struct {
     italic_face: Face,
     ui_face: Face,
     ui_small_face: Face,
+    extra: [extra_faces.len]Face,
     pixels: []u8,
     cpu: []Vertex,
     glyphs: [384]Glyph = @splat(.{}),
@@ -76,6 +107,12 @@ pub const Renderer = struct {
         errdefer ui_face.deinit();
         const ui_small_face = try Face.initBytes(if (@hasDecl(assets, "ui")) assets.ui else assets.mono, ui_small_font_px);
         errdefer ui_small_face.deinit();
+        const extra = try initExtras(struct {
+            fn f(_: void, logical: u32) u32 {
+                return logical;
+            }
+        }.f, {});
+        errdefer for (extra) |f| f.deinit();
         const device = try gpu.Device.init(.{ .spirv = true }, false, "vulkan");
         errdefer device.deinit();
         try device.claimWindow(window);
@@ -110,7 +147,7 @@ pub const Renderer = struct {
         errdefer device.releaseBuffer(vertices);
         const transfer = try device.createTransferBuffer(.{ .usage = .upload, .size = side * side + color_bytes + max_vertices * @sizeOf(Vertex) });
         errdefer device.releaseTransferBuffer(transfer);
-        return .{ .allocator = a, .window = window, .device = device, .format = swap_format, .pipeline = pipeline, .erase_pipeline = erase_pipeline, .atlas = atlas, .color_atlas = color_atlas, .color_pixels = color_pixels, .sampler = sampler, .vertices = vertices, .transfer = transfer, .face = face, .italic_face = italic_face, .ui_face = ui_face, .ui_small_face = ui_small_face, .pixels = pixels, .cpu = cpu, .mono_size = size };
+        return .{ .allocator = a, .window = window, .device = device, .format = swap_format, .pipeline = pipeline, .erase_pipeline = erase_pipeline, .atlas = atlas, .color_atlas = color_atlas, .color_pixels = color_pixels, .sampler = sampler, .vertices = vertices, .transfer = transfer, .face = face, .italic_face = italic_face, .ui_face = ui_face, .ui_small_face = ui_small_face, .extra = extra, .pixels = pixels, .cpu = cpu, .mono_size = size };
     }
     fn px(self: *const Renderer, logical: u32) u32 {
         return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(logical)) * self.scale))));
@@ -140,11 +177,19 @@ pub const Renderer = struct {
         errdefer ui_face.deinit();
         const ui_small_face = try Face.initBytes(ui_bytes, self.px(ui_small_font_px));
         errdefer ui_small_face.deinit();
+        const extra = try initExtras(struct {
+            fn f(r: *Renderer, logical: u32) u32 {
+                return r.px(logical);
+            }
+        }.f, self);
+        errdefer for (extra) |f| f.deinit();
         try self.setMonoSize(self.mono_size);
         self.ui_face.deinit();
         self.ui_small_face.deinit();
+        for (self.extra) |f| f.deinit();
         self.ui_face = ui_face;
         self.ui_small_face = ui_small_face;
+        self.extra = extra;
         for (&self.glyphs) |*g| g.valid = false;
     }
     pub fn deinit(self: *Renderer) void {
@@ -164,6 +209,7 @@ pub const Renderer = struct {
         self.italic_face.deinit();
         self.ui_face.deinit();
         self.ui_small_face.deinit();
+        for (self.extra) |f| f.deinit();
         self.allocator.free(self.pixels);
         self.allocator.free(self.cpu);
         self.* = undefined;
@@ -296,6 +342,7 @@ pub const Renderer = struct {
             .italic => self.italic_face,
             .ui => self.ui_face,
             .ui_small => self.ui_small_face,
+            else => self.extra[@intFromEnum(style) - first_extra],
         };
         var pen: f32 = 0;
         var off: usize = 0;
@@ -355,6 +402,38 @@ pub const Renderer = struct {
     pub fn widthSmall(self: *Renderer, value: []const u8) f32 {
         return self.drawText(.ui_small, value, 0, 0, undefined, false) catch 0;
     }
+    /// Zed `LabelSize::Small` italic label (12px IBM Plex Sans Italic).
+    pub fn textSmallItalic(self: *Renderer, value: []const u8, x: f32, baseline: f32, color: [4]u8) !void {
+        _ = try self.drawText(.ui_small_italic, value, x, baseline, color, true);
+    }
+    /// Zed `Headline` at `HeadlineSize::Small` (16px).
+    pub fn textHeadline(self: *Renderer, value: []const u8, x: f32, baseline: f32, color: [4]u8) !void {
+        _ = try self.drawText(.headline, value, x, baseline, color, true);
+    }
+    /// Zed `Headline` default (`HeadlineSize::Medium`, 18px).
+    pub fn textHeadlineMedium(self: *Renderer, value: []const u8, x: f32, baseline: f32, color: [4]u8) !void {
+        _ = try self.drawText(.headline_medium, value, x, baseline, color, true);
+    }
+    pub fn widthHeadlineMedium(self: *Renderer, value: []const u8) f32 {
+        return self.drawText(.headline_medium, value, 0, 0, undefined, false) catch 0;
+    }
+    /// Zed `LabelSize::XSmall` (10px) UI label.
+    pub fn textXSmall(self: *Renderer, value: []const u8, x: f32, baseline: f32, color: [4]u8) !void {
+        _ = try self.drawText(.ui_xsmall, value, x, baseline, color, true);
+    }
+    pub fn widthXSmall(self: *Renderer, value: []const u8) f32 {
+        return self.drawText(.ui_xsmall, value, 0, 0, undefined, false) catch 0;
+    }
+    /// Zed `LabelSize::XSmall` label drawn with `buffer_font` (10px Lilex).
+    pub fn textMonoXSmall(self: *Renderer, value: []const u8, x: f32, baseline: f32, color: [4]u8) !void {
+        _ = try self.drawText(.mono_xsmall, value, x, baseline, color, true);
+    }
+    pub fn widthMonoXSmall(self: *Renderer, value: []const u8) f32 {
+        return self.drawText(.mono_xsmall, value, 0, 0, undefined, false) catch 0;
+    }
+    pub fn widthHeadline(self: *Renderer, value: []const u8) f32 {
+        return self.drawText(.headline, value, 0, 0, undefined, false) catch 0;
+    }
     pub fn widthUi(self: *Renderer, value: []const u8) f32 {
         return self.drawText(.ui, value, 0, 0, undefined, false) catch 0;
     }
@@ -394,6 +473,68 @@ pub const Renderer = struct {
         }
         self.icons[i].stamp = self.frame;
         try self.quad(@round(x * self.scale) / self.scale, @round(y * self.scale) / self.scale, size, size, @as(f32, @floatFromInt(sx)) / side, @as(f32, @floatFromInt(sy)) / side, @as(f32, @floatFromInt(n)) / side, @as(f32, @floatFromInt(n)) / side, color);
+    }
+    /// Monochrome SVG larger than an icon cell (up to 64px, e.g. the onboarding logo).
+    /// The mask is rasterized once at device density and stored as four 32px tiles in
+    /// ordinary icon slots, so allocation and eviction are shared with `icon`.
+    pub fn largeIcon(self: *Renderer, svg: []const u8, x: f32, y: f32, size: f32, color: [4]u8) !void {
+        if (!self.active) return error.BeginFrameFailed;
+        if (!std.math.isFinite(size) or size <= 0 or size > 64) return error.InvalidIconSize;
+        if (size <= 32 and @round(size * self.scale) <= 32) return self.icon(svg, x, y, size, color);
+        const n: u8 = @intFromFloat(@min(64, @max(2, @round(size * self.scale / 2) * 2)));
+        const half = n / 2;
+        var slots: [4]?usize = .{ null, null, null, null };
+        var missing = false;
+        for (0..4) |q| {
+            const hash = std.hash.Wyhash.hash(q + 1, svg);
+            for (&self.icons, 0..) |*entry, i| if (entry.valid and entry.hash == hash and entry.len == svg.len and entry.size == n) {
+                slots[q] = i;
+                break;
+            };
+            if (slots[q] == null) missing = true;
+        }
+        if (missing) {
+            var mask: [64 * 64]u8 = undefined;
+            if (zid_svg_alpha(svg.ptr, svg.len, n, &mask) == 0) return error.SvgParse;
+            for (0..4) |q| {
+                if (slots[q] != null) continue;
+                var vacant: ?usize = null;
+                for (&self.icons, 0..) |*entry, i| {
+                    var taken = false;
+                    for (slots) |s| if (s == i) {
+                        taken = true;
+                    };
+                    if (!taken and entry.stamp != self.frame) {
+                        vacant = i;
+                        break;
+                    }
+                }
+                const i = vacant orelse {
+                    self.degraded = true;
+                    return;
+                };
+                const sx = (i % 32) * 32;
+                const sy = 768 + (i / 32) * 32;
+                const ox = (q % 2) * half;
+                const oy = (q / 2) * half;
+                for (0..32) |row| @memset(self.pixels[(sy + row) * side + sx ..][0..32], 0);
+                for (0..half) |row| @memcpy(self.pixels[(sy + row) * side + sx ..][0..half], mask[(oy + row) * n + ox ..][0..half]);
+                self.icons[i] = .{ .hash = std.hash.Wyhash.hash(q + 1, svg), .len = svg.len, .size = n, .valid = true, .stamp = self.frame };
+                slots[q] = i;
+            }
+        }
+        const left = @round(x * self.scale) / self.scale;
+        const top = @round(y * self.scale) / self.scale;
+        const tile = @as(f32, @floatFromInt(half)) / self.scale;
+        for (slots, 0..) |slot, q| {
+            const i = slot.?;
+            self.icons[i].stamp = self.frame;
+            const sx = (i % 32) * 32;
+            const sy = 768 + (i / 32) * 32;
+            const dx: f32 = @floatFromInt(q % 2);
+            const dy: f32 = @floatFromInt(q / 2);
+            try self.quad(left + dx * tile, top + dy * tile, tile, tile, @as(f32, @floatFromInt(sx)) / side, @as(f32, @floatFromInt(sy)) / side, @as(f32, @floatFromInt(half)) / side, @as(f32, @floatFromInt(half)) / side, color);
+        }
     }
     /// Multi-color SVG icon (icon themes such as Catppuccin), drawn with its own colors;
     /// `alpha` scales opacity. Rasterized at device density into the RGBA atlas.

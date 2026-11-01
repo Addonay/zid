@@ -8,6 +8,9 @@ pub const ThemeName = enum {
     tokyo_night,
     catppuccin,
     vscode,
+    one_light,
+    ayu_light,
+    gruvbox_light,
 };
 
 pub const Builtin = struct {
@@ -27,12 +30,15 @@ pub fn builtin(name: ThemeName) Builtin {
         .tokyo_night => .{ .bytes = @embedFile("themes/tokyo-night.json"), .selector_name = "Tokyo Night" },
         .catppuccin => .{ .bytes = @embedFile("themes/catppuccin-mauve.json"), .selector_name = "Catppuccin Mocha" },
         .vscode => .{ .bytes = @embedFile("themes/dark-modern.json"), .selector_name = "Dark Modern (VS Code)" },
+        .one_light => .{ .bytes = @embedFile("themes/one.json"), .selector_name = "One Light" },
+        .ayu_light => .{ .bytes = @embedFile("themes/ayu.json"), .selector_name = "Ayu Light" },
+        .gruvbox_light => .{ .bytes = @embedFile("themes/gruvbox.json"), .selector_name = "Gruvbox Light" },
     };
 }
 
 test "built-in selections identify original JSON entries" {
     const std = @import("std");
-    for ([_]ThemeName{ .one_dark, .one_dark_pro_glass, .ayu, .gruvbox, .solarized, .tokyo_night, .catppuccin, .vscode }) |name| {
+    for (std.enums.values(ThemeName)) |name| {
         const entry = builtin(name);
         try std.testing.expect(std.mem.startsWith(u8, entry.bytes, "{"));
         try std.testing.expect(entry.selector_name.len != 0);
