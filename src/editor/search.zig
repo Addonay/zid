@@ -75,8 +75,12 @@ pub const SearchPlan = struct {
     pub fn previous(self: *const SearchPlan, buffer: *const TextBuffer, range: Range, before: usize) ?usize {
         if (!range.valid(buffer.len()) or before < range.start or before > range.end) return null;
         const limit = @min(before, range.end);
+        if (limit == range.start) return null;
         if (self.pattern.len > range.end - range.start) return null;
-        var scanner = Scanner{ .plan = self, .buffer = buffer, .start = range.start, .end = range.end, .offset = range.start };
+        // A match beginning before limit can end at most pattern.len - 1
+        // bytes beyond it. Avoid scanning the remainder of the document.
+        const scan_end = @min(range.end, (limit - 1) +| self.pattern.len);
+        var scanner = Scanner{ .plan = self, .buffer = buffer, .start = range.start, .end = scan_end, .offset = range.start };
         var result: ?usize = null;
         while (scanner.advance()) |found| {
             if (found >= limit) break;
@@ -221,6 +225,18 @@ test "search crosses fixed windows and piece boundaries" {
     var plan = try SearchPlan.init(testing.allocator, "needle", false);
     defer plan.deinit();
     try testing.expectEqual(@as(?usize, 4094), plan.next(&buffer, .{ .start = 0, .end = text.len }, 0));
+}
+
+test "reverse search includes matches that extend past its start cutoff" {
+    var buffer = try TextBuffer.init(testing.allocator, "xababab tail");
+    defer buffer.deinit();
+    var plan = try SearchPlan.init(testing.allocator, "abab", false);
+    defer plan.deinit();
+    const range: Range = .{ .start = 0, .end = buffer.len() };
+    try testing.expectEqual(@as(?usize, null), plan.previous(&buffer, range, 0));
+    try testing.expectEqual(@as(?usize, 1), plan.previous(&buffer, range, 2));
+    try testing.expectEqual(@as(?usize, 1), plan.previous(&buffer, range, 3));
+    try testing.expectEqual(@as(?usize, 3), plan.previous(&buffer, range, 4));
 }
 
 test "random edited buffers agree with flat reference" {
