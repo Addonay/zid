@@ -238,6 +238,14 @@ pub const App = struct {
         }
     }
 
+    /// Memory-only completion pump shared by the interactive loop and scripted
+    /// offscreen frames. File operations remain on each document's worker.
+    pub fn pollAsync(self: *App) void {
+        self.cancelInactiveCopies();
+        self.pollLargeCopy();
+        if (self.workspace.current().large) |*large| _ = large.poll(&.{});
+    }
+
     pub fn run(self: *App) !void {
         self.window.setHitTest(App, hitTest, self) catch {};
         try self.draw();
@@ -263,7 +271,7 @@ pub const App = struct {
                     self.cancelInactiveCopies();
                 }
             }
-            self.pollLargeCopy();
+            self.pollAsync();
             if (self.workspace.current().large) |*large| {
                 _ = large.poll(&.{});
                 if (indexing) dirty = true;

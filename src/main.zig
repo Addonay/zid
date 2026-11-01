@@ -83,6 +83,7 @@ pub fn main(init: std.process.Init) !void {
     if (screenshot_path) |shot_path| {
         var frame: u32 = 0;
         while (frame < target_frames) : (frame += 1) {
+            app.pollAsync();
             try app.draw();
         }
         const shot = try app.renderer.readPixels(init.gpa);
