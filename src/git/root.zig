@@ -1,6 +1,10 @@
 //! Git CLI backend. All paths are byte strings, relative to Repository.root unless noted.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+pub const worker = @import("worker.zig");
+test {
+    _ = worker;
+}
 
 pub const Options = struct {
     stdout_limit: usize = 16 * 1024 * 1024,

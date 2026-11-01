@@ -89,3 +89,60 @@ Zed uses a separate settings window with independently focusable search,
 navigation and controls; Zid currently presents an in-app modal and supports
 search and control focus. Zid wraps descriptions using the same measured rows for drawing, scrolling and hit testing, and stacks controls when space is tight. Zed shows an undo control for settings that differ from their default (settings_ui.rs, render setting row); Zid exposes Reset and Delete for its supported values. Resetting line height also reduces font size if necessary to keep the configuration valid. Zed's scope/file selector, full navigation keyboard behavior and complete setting catalog are not yet reproduced. No Zed
 reference screenshot was available for a pixel comparison in this pass.
+
+### SQLite viewer (2026-11-01)
+
+The viewer follows Zed's workspace panel approach in `crates/workspace/src/dock.rs`:
+feature state belongs to the workspace and is presented inside its shell. Zid's
+initial viewer is a dismissible overlay, not a full Zed dock implementation.
+SQLite work is submitted as a cancellable Io task with a bounded result; the UI
+owns and joins that task before destroying its inputs or result.
+
+### LSP line positions (2026-11-01)
+
+Zed's `crates/text/src/text.rs` normalizes both CRLF and lone CR to LF in
+buffer text. Zid's LSP position conversion accepts unnormalized text and treats
+those same sequences as logical line breaks, while retaining byte offsets into
+the original text. An offset inside a CRLF pair is rejected.
+
+### LSP transport and synchronization (2026-11-01)
+
+Zed separates its stdout handler from message dispatch and bounds the incoming
+queue (`crates/lsp/src/input_handler.rs`). Zid now has separate reader and
+writer tasks with bounded raw queues; dispatch and response correlation are still
+outstanding. Zed's `project/src/lsp_store.rs` interprets numeric synchronization
+capabilities as change settings and examines save options separately. Zid's
+static capability parser and document synchronization follow that distinction;
+dynamic registrations remain unfinished.
+
+Zed's editor maps diagnostics into styled ranges (`crates/editor/src/display_map.rs`)
+and draws their underline in `element.rs`. Zid's first integration keeps
+diagnostic snapshots per document revision and marks the starting line in the
+gutter; it does not yet implement Zed's range underline or diagnostic popovers.
+Unversioned ZLS diagnostics are explicitly best effort and marked in the status bar.
+
+Zed's Linux keymap binds `ctrl-k ctrl-i` to `editor::Hover`. Zid uses the same
+action and binding for a cursor-anchored popup. Its initial popup displays plain
+text rather than Zed's rendered Markdown and does not implement mouse hover.
+
+### Fold map (2026-11-01)
+
+Zed's `crates/editor/src/display_map/fold_map.rs` stores fold endpoints as
+buffer anchors and uses a separate transform tree to map input to displayed
+text. Zid's initial fold map follows that split, including overlap and optional
+adjacency merging. It currently rebuilds the tree and does not emit Zed's
+incremental invalidation edits, implement unfolding, or supply the later display
+layers' point, chunk and row APIs. The UI still uses the existing editor path.
+
+### Editor chrome parity checklist items 1-6 (2026-11-01)
+
+| Reference source | Observation | Zid decision |
+| --- | --- | --- |
+| `.ref/zed/crates/theme/src/buffer_line_height.rs` | `Comfortable` is `1.618` x font size (`Standard` 1.3); the default is Comfortable | `config.Settings.line_height` defaults to 24, the integer nearest 1.618 x 15px. It is still a fixed pixel value, not font-relative, and it stays the explicit override. |
+| `.ref/zed/crates/editor/src/element.rs` (`layout_indent_guides`, `paint_indent_guides`) | One guide per indent level from the text origin; `Fixed` coloring; line width 1 and active width 1 (`assets/settings/default.json`); active guide chosen from the cursor block | `views/editor.zig:drawIndentGuides` draws 1px rects per level on visible non-blank rows, highlighting the guide one level left of the cursor's indent. Not implemented: continuation across blank lines, folds, indent-aware coloring, and the large read-only viewer. |
+| `.ref/zed/crates/editor/src/indent_guides.rs` | Active guides come from the enclosing indent range, not a single row | Approximated per visible row; a guide ends where its block's rows stop being indented. |
+| `.ref/zed/crates/theme/src/default_colors.rs` (`ThemeColors::dark/light`), `crates/theme_settings/src/theme_settings.rs` (`refine_theme`) | `editor_indent_guide` is `neutral().dark_alpha().step_4()` (light: `light_alpha().step_5()`); `editor_indent_guide_active` is step 6; the checklist's `panel.indent_guide` references (`default_colors.rs:99-101`) are panel keys, not editor keys | `theme.zig` reads `editor.indent_guide` and `editor.indent_guide_active` with those Sand-scale fallbacks by `appearance`. The bundled One Dark JSON has no editor indent keys, so One Dark uses `#fefef31b` and `#fffaed2d`. |
+| `.ref/zed/crates/theme/src/default_colors.rs` (`editor_active_line_number`), `crates/editor/src/element.rs` (`LineNumberSegment` `Active`) | The cursor row's number uses `editor.active_line_number`; the checklist cited `element.rs:136-137`, which is the same mapping | `views/editor.zig` uses `theme.active_line_number` for the cursor row's gutter number (One Dark JSON: `#d0d4da`). |
+| `.ref/zed/crates/ui/src/components/tab.rs` (`container_height`, `content_height`, `Tab::render`), `crates/ui/src/styles/spacing.rs` | Container is `DynamicSpacing::Base32` (32px at the Default density), with a 1px bottom border and `px` 8 / `gap` 8; the content box is 31px; the inactive tab has `border_b`, the active tab has no bottom border | `layout.zig` tab bar is 32px. `views/tabs.zig` centres icon, label and close glyphs in 31px, uses 8px padding and gap, keeps the bottom border on inactive tabs, and lets the active tab cover it. The checklist's "35 to 32" was right. |
+| `.ref/zed/crates/workspace/src/pane.rs` (`render_tab_bar_drop_target`) | Tab bar drop targets use the same container height | Covered by the same 32px bar; drag-and-drop is still unimplemented. |
+| `.ref/zed/crates/theme/src/default_colors.rs` (`tab_inactive_background`), `assets/themes/one/one.json` (`tab.inactive_background`) | Inactive tabs use `tab.inactive_background`, falling back to `neutral().light/dark().step_2()` | `theme.zig` reads `tab.inactive_background` (fallback `#f9f9f8ff` light / `#191918ff` dark); inactive tabs fill it. |

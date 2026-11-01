@@ -29,6 +29,10 @@ pub fn drawEditor(self: *App) !void {
     var row = checkpoint * 64;
     const selected = doc.selection();
     const cursor_row = doc.lineOf(doc.cursor);
+    const diagnostics = self.currentDiagnostics();
+    const cursor_indent = leadingColumns(self.lineBytes(doc, cursor_row), self.settings.tab_size);
+    // Zed highlights the guide of the block that contains the cursor: the guide one indent level left of it.
+    const active_guide_column: ?usize = if (cursor_indent >= self.settings.tab_size) ((cursor_indent / self.settings.tab_size) - 1) * self.settings.tab_size else null;
     while (row < doc.lineCount() and row < doc.scroll_line + self.pageLines() + 1) : (row += 1) {
         const bytes = self.lineBytes(doc, row);
         var sink = syntax.Sink.init(&spans);
@@ -40,10 +44,19 @@ pub fn drawEditor(self: *App) !void {
         if (row == cursor_row) try self.renderer.rect(e.x, y, e.w, line_height, t.active_line);
         var number: [24]u8 = undefined;
         const n = try std.fmt.bufPrint(&number, "{d}", .{row + 1});
-        try self.renderer.text(n, e.x + 48 - self.renderer.width(n), baseline, if (row == cursor_row) t.text else t.line_number);
+        try self.renderer.text(n, e.x + 48 - self.renderer.width(n), baseline, if (row == cursor_row) t.active_line_number else t.line_number);
+        if (diagnostics) |snapshot| {
+            for (snapshot.diagnostics) |diagnostic| {
+                if (diagnostic.range.start.line == row) {
+                    try self.renderer.rect(e.x + 3, y + 3, 3, @max(1, line_height - 6), if (diagnostic.severity == null or diagnostic.severity.? == 1) t.error_text else t.accent);
+                    break;
+                }
+            }
+        }
         const x = e.x + 64 - doc.scroll_x;
         const start = doc.lineStart(row);
         self.clip(.{ .x = e.x + 60, .y = e.y, .w = @max(0, e.w - 60), .h = e.h });
+        if (self.settings.show_indent_guides) try drawIndentGuides(self, bytes, x, e, y, line_height, active_guide_column);
         const sel_start = @min(bytes.len, selected.start -| start);
         const sel_end = @min(bytes.len, selected.end -| start);
         if (selected.end > start and selected.start <= start + bytes.len) {
@@ -68,6 +81,44 @@ pub fn drawEditor(self: *App) !void {
         try self.renderer.rect(e.x + e.w - 8, y, 5, h, t.selected);
     }
 }
+/// Zed draws one 1px guide per indent level, starting at the text origin, and highlights
+/// the one enclosing the cursor. Guides are limited to visible, non-blank rows; Zed also
+/// continues them across blank lines, which is not implemented yet.
+fn drawIndentGuides(self: *App, bytes: []const u8, x: f32, e: Rect, y: f32, line_height: f32, active_column: ?usize) !void {
+    const tab_size = self.settings.tab_size;
+    const columns = leadingColumns(bytes, tab_size);
+    if (columns < tab_size or isBlank(bytes)) return;
+    const column_width = self.textWidth(" ");
+    const t = self.settings.theme;
+    self.clip(.{ .x = e.x + 64, .y = e.y, .w = @max(0, e.w - 64), .h = e.h });
+    var level: usize = 0;
+    while (level * tab_size + tab_size <= columns) : (level += 1) {
+        const column = level * tab_size;
+        const guide_x = x + column_width * @as(f32, @floatFromInt(column));
+        if (guide_x < e.x + 64) continue;
+        const active = if (active_column) |active| active == column else false;
+        try self.renderer.rect(@floor(guide_x), y, 1, line_height, if (active) t.indent_guide_active else t.indent_guide);
+    }
+    self.clip(.{ .x = e.x + 60, .y = e.y, .w = @max(0, e.w - 60), .h = e.h });
+}
+
+fn leadingColumns(bytes: []const u8, tab_size: usize) usize {
+    var column: usize = 0;
+    for (bytes) |b| {
+        if (b == ' ') {
+            column += 1;
+        } else if (b == '\t') {
+            column += tab_size - column % tab_size;
+        } else break;
+    }
+    return column;
+}
+
+fn isBlank(bytes: []const u8) bool {
+    for (bytes) |b| if (b != ' ' and b != '\t') return false;
+    return true;
+}
+
 fn drawLarge(self: *App) !void {
     const doc = self.workspace.current();
     const large = &self.workspace.current().large.?;

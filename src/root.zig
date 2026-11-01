@@ -7,7 +7,24 @@ pub const find = @import("editor/find.zig");
 pub const Workspace = @import("editor/workspace.zig").Workspace;
 pub const git = @import("git/root.zig");
 pub const database = @import("database/root.zig");
+pub const lsp = @import("lsp/root.zig");
+/// Zed crate ports (`.ref/zed/crates/*`).
+pub const sum_tree = @import("sum_tree/sum_tree.zig");
+pub const clock = @import("clock/clock.zig");
+pub const rope = @import("rope/rope.zig");
+pub const zed_text = @import("text/zed/root.zig");
+pub const language = @import("language/language.zig");
+pub const multi_buffer = @import("multi_buffer/multi_buffer.zig");
+pub const display_map = @import("editor/display_map/root.zig");
 test {
+    _ = sum_tree;
+    _ = clock;
+    _ = rope;
+    _ = zed_text;
+    _ = language;
+    _ = multi_buffer;
+    _ = display_map;
+    _ = lsp;
     _ = git;
     _ = database;
     _ = @import("editor/text_buffer.zig");

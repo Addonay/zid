@@ -1,10 +1,13 @@
 const std = @import("std");
 const TextBuffer = @import("text_buffer.zig").TextBuffer;
 const Node = @import("../text/piece_tree.zig").Node;
+var next_instance_id: std.atomic.Value(u64) = .init(1);
 
 pub const Document = struct {
     allocator: std.mem.Allocator,
     buffer: TextBuffer,
+    /// Stable across edits and moves, distinct for each opened document.
+    instance_id: u64,
     path: ?[:0]u8 = null,
     cursor: usize = 0,
     anchor: usize = 0,
@@ -218,7 +221,9 @@ pub const Document = struct {
             allocator.free(text);
             return err;
         };
-        var self: Document = .{ .allocator = allocator, .buffer = try TextBuffer.initOwned(allocator, text), .crlf = std.mem.indexOf(u8, text, "\r\n") != null };
+        const id = next_instance_id.fetchAdd(1, .monotonic);
+        std.debug.assert(id != 0 and id != std.math.maxInt(u64));
+        var self: Document = .{ .allocator = allocator, .buffer = try TextBuffer.initOwned(allocator, text), .instance_id = id, .crlf = std.mem.indexOf(u8, text, "\r\n") != null };
         errdefer self.deinit();
         if (path) |value| self.path = try allocator.dupeSentinel(u8, value, 0);
         var lines = std.mem.splitScalar(u8, text, '\n');

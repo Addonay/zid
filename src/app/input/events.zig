@@ -33,7 +33,16 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
                 try self.dialogKey(key);
                 return;
             }
+            if (self.database.open) {
+                @import("../database_view.zig").key(self, key, key_event.mod);
+                return;
+            }
+            const instance = doc.instance_id;
+            const revision = doc.revision;
+            const cursor = doc.cursor;
             try dispatchKey(self, key, key_event.mod);
+            const current = self.workspace.current();
+            if (current.instance_id != instance or current.revision != revision or current.cursor != cursor) _ = self.dismissHover();
         },
         .key_up => |key_event| {
             // Zed's tab switcher confirms when the modifier that opened it is released.
@@ -46,10 +55,15 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
                 return;
             }
             const text = input.text;
+            if (self.database.open and self.dialog == .none) {
+                self.database.input().insert(text);
+                return;
+            }
             if (commands.lineInput(self)) |line| {
                 line.insert(text);
                 try self.lineInputChanged();
             } else if (self.dialog == .settings) settings_dialog.typeText(self, text) else if (self.dialog == .open or self.dialog == .save) try self.path_input.appendSlice(self.gpa, text) else if (self.dialog == .none and !self.panel_focus) {
+                _ = self.dismissHover();
                 try doc.insert(text);
                 try self.revealCursor();
             }
@@ -60,6 +74,7 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
             self.pointer_down = true;
             self.mouse_x = button.x;
             self.mouse_y = button.y;
+            _ = self.dismissHover();
             try self.click(button.x, button.y, button.clicks);
         },
         .mouse_button_up => {
@@ -70,14 +85,28 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
         .mouse_motion => |motion| {
             self.mouse_x = motion.x;
             self.mouse_y = motion.y;
-            if (self.dragging) try self.placeCursor(motion.x, motion.y, true);
+            if (self.dragging) {
+                _ = self.dismissHover();
+                try self.placeCursor(motion.x, motion.y, true);
+            }
         },
         .mouse_wheel => |wheel| {
             const mx = wheel.x;
             const my = wheel.y;
             const panel = try self.layout.rect(self.layout.panel);
             const delta: i64 = @intFromFloat(-wheel.scroll_y * 3);
-            if (self.dialog == .settings) {
+            if (self.hover_rect.contains(mx, my)) {
+                self.hover_scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.hover_scroll)) + delta, 0, 4096));
+                return;
+            }
+            if (self.database.open) {
+                if (self.database.table) |*table| {
+                    if (ctrlHeld() or shiftHeld()) {
+                        const columns = if (table.rows().len > 0) table.rows()[0].object.count() else 0;
+                        self.database.column_scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.database.column_scroll)) + delta, 0, @as(i64, @intCast(columns -| 1))));
+                    } else self.database.scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.database.scroll)) + delta, 0, @as(i64, @intCast(table.rows().len -| 1))));
+                }
+            } else if (self.dialog == .settings) {
                 settings_dialog.scroll(self, -wheel.scroll_y * 40);
             } else if (self.dialog != .none) {} else if (modals.scrollModal(self, -wheel.scroll_y)) {} else if (panel.contains(mx, my)) {
                 self.panel_scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.panel_scroll)) + delta, 0, @as(i64, @intCast(self.maxPanelScroll()))));
@@ -187,6 +216,18 @@ fn dispatchKey(self: *App, key: sdl.keycode.Keycode, mods: sdl.keycode.KeyModifi
 pub fn simulate(self: *App, spec: []const u8) !void {
     var it = std.mem.splitScalar(u8, spec, ',');
     while (it.next()) |token| {
+        if (std.mem.eql(u8, token, "database")) {
+            try self.click(self.layout.width - @import("../views/title_bar.zig").controlsInset(self) - 20, 17, 1);
+            continue;
+        }
+        if (self.database.open and std.mem.eql(u8, token, "tab")) {
+            @import("../database_view.zig").key(self, .tab, .{});
+            continue;
+        }
+        if (self.database.open and std.mem.eql(u8, token, "enter")) {
+            @import("../database_view.zig").key(self, .return_key, .{});
+            continue;
+        }
         // Explicit frame progression for asynchronous offscreen QA scripts.
         if (std.mem.startsWith(u8, token, "frames:")) {
             const count = try std.fmt.parseInt(u32, token["frames:".len..], 10);
@@ -198,7 +239,7 @@ pub fn simulate(self: *App, spec: []const u8) !void {
         }
         if (std.mem.startsWith(u8, token, "text:")) {
             const text = token["text:".len..];
-            if (commands.lineInput(self)) |line| {
+            if (self.database.open) self.database.input().insert(text) else if (commands.lineInput(self)) |line| {
                 line.insert(text);
                 try self.lineInputChanged();
             } else try self.workspace.current().insert(text);

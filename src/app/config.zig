@@ -3,7 +3,9 @@ pub const theme_module = @import("theme.zig");
 pub const Theme = theme_module.Theme;
 pub const Settings = struct {
     font_size: u32 = 15,
-    line_height: u32 = 23,
+    // Zed's "comfortable" buffer line height is 1.618 x font size (`crates/theme/src/buffer_line_height.rs`),
+    // which is 24.27px at the default 15px font; integer pixels are stored, so the default is 24.
+    line_height: u32 = 24,
     panel_width: u32 = 240,
     tab_size: u32 = 4,
     cursor_blink: bool = true,

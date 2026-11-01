@@ -7,11 +7,13 @@ application file. Planned directories are introduced when they contain real code
 | Directory | Owns | May depend on |
 | --- | --- | --- |
 | `core/` | logging, jobs, mailbox, IDs, cancellation, configuration primitives | Zig standard library |
+| `sum_tree/` | Port of Zed's `sum_tree`: persistent refcounted B+ tree, cursors, keyed edits | standard library |
+| `rope/` | Port of Zed's `rope`: chunked UTF-8 text over `sum_tree` with offset/point/UTF-16 dimensions | sum_tree, standard library |
 | `text/` | byte sources, piece tree, snapshots, indexing, Unicode, history | core, standard library |
 | `editor/` | documents (`document`), treap-backed storage (`text_buffer`), editor commands behind `editor::*` actions (`commands`), workspace lifecycle | text, core, standard library |
 | `syntax/` | incremental lexers, checkpoint state, later structure | text, core, standard library |
 | `project/` (planned) | file tree, watches, fuzzy search, project metadata | editor IDs, core, filesystem interface |
-| `app/` | application ownership, scheduling, configuration and action routing | headless modules, platform, gfx |
+| `app/` | application ownership, scheduling, configuration and action routing; database worker and viewer | headless modules, platform, gfx |
 | `app/views/` | title bar, files, tabs, editor, status, dialogs, settings, pickers (`picker_view`, `modals`), buffer search, keymap editor | application view state, gfx, layout |
 | `app/input/` | event translation, keymap dispatch (`events`), Zed action registry and focus contexts (`commands`), picker controllers (`pickers`) | app actions, typed SDL events |
 | `app/` (pure helpers) | `keymap` (Zed keymap parse/resolve), `fuzzy`, `line_input`, `recent_projects`, `icon_theme`, `text_match`, `settings_helpers` | standard library only; tested by `test-ui` |
@@ -19,10 +21,11 @@ application file. Planned directories are introduced when they contain real code
 | `app/config/` (planned) | settings, keymap and theme registry | standard library; no SDL |
 | `gfx/` | GPU pipelines, batching, clipping, glyph/icon atlas | typed zig-sdl3 GPU, font/SVG raster interfaces |
 | `platform/` | windows, native caption icons, clipboard, fonts | typed zig-sdl3, native font libraries |
-| `lsp/` (planned) | JSON-RPC framing, processes, document versions | core, editor IDs, process interface |
+| `lsp/` | JSON-RPC framing, bounded transport, client dispatch and capability parsing | standard library; app owns document mapping |
+| `app/lsp.zig` | ZLS lifecycle, bounded document snapshots, revision mapping and diagnostics | workspace and `lsp/`; no rendering |
 | `terminal/` (planned) | PTYs, libghostty screen model | core, process interface |
 | `diff/` (planned) | histogram/Myers and intraline differences | text, standard library |
-| `db/` (planned) | connections, drivers, query execution and result streams | core; no presentation |
+| `database/` | SQLite query execution and backend contracts | standard library, explicit Io; no presentation |
 | `markdown/` (planned) | block/inline model | text, standard library |
 | `notebook/` (planned) | ipynb model, kernel sessions and output lifecycle | editor, core, process interface |
 | `remote/` (planned) | transport, server, filesystem/process proxies | core, protocol interfaces |

@@ -32,10 +32,13 @@ intentionally coarse; a privacy-aware diagnostic channel remains to be designed.
 ## Not implemented: remote providers
 
 The tagged `Connection` type reserves MySQL, PostgreSQL and Convex variants;
-`query` returns `UnsupportedBackend` for them. `SecretRef` is only an opaque
-reference, not a secret store or resolution mechanism. No secrets should be
-stored in connection documents or logged. The application must provide a secure
-credential store and an ephemeral resolver before remote connections can work.
+`query` returns `UnsupportedBackend` for them. PostgreSQL and MySQL connection
+configuration now distinguishes host, port, database, user, and an optional
+credential reference. `remote.SecretProvider` defines a caller-supplied
+resolver, validates the reference and rejects NUL bytes in its result; the
+caller owns the returned allocation and must clear and free it. The resolver is
+not yet invoked by an adapter. No secrets should be stored in connection
+documents or logged. The application must provide a secure credential store.
 No authenticated requests, remote schema discovery, connection pooling, TLS
 configuration, or tests against remote servers are implemented.
 
@@ -67,12 +70,14 @@ not establish an in-process embedded library API. Local deployment is documented
 as beta and intended for development; it should not be presented as embedded
 SQLite or bundled silently into Zid.
 
-## Integration requirements
+## Application integration and remaining work
 
-Import `src/database/root.zig` as a module and add its tests to the build; these
-files are intentionally not wired to the application or build by this change.
-The shell owner must implement connection selection, secret resolution, worker
-lifecycle/cancellation, result and error presentation, and metadata refresh.
+The shell includes a basic SQLite overlay with path and SQL inputs, schema query,
+bounded results and a cancellable worker. It is a read-only viewer, not a full
+database client: both fields are single-line inputs capped at 256 bytes, and
+closing or cancelling waits for the worker to finish cancellation. The other
+providers remain unavailable. Connection selection, secret resolution, richer
+result and error presentation, and metadata refresh still need implementation.
 Avoid writing query history, secret values, or raw diagnostics to logs. Provide
 clear unsupported status for remote variants and the limitations above. A
 production viewer needs actual column metadata for zero rows, binary-safe typed

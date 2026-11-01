@@ -16,6 +16,11 @@ remote SSH projects, and opens multi-gigabyte files without loading them into RA
 5. It runs `.ipynb` notebooks with rich outputs.
 6. It edits a project on a remote host over SSH.
 
+> **Direction change (2026-11-01):** we now recreate Zed faithfully first; see
+> [ZED_PARITY.md](ZED_PARITY.md). The milestones below remain the long-term plan.
+> Zid-specific designs (piece treap, JumpRope/skip-list and gap-buffer notes, large-file
+> mode) are deferred until after parity, and M7 (database) is paused.
+
 ## Milestones
 
 Each milestone ends with tests (`zig build test`, `test-layout`, `smoke`, `check`) and an

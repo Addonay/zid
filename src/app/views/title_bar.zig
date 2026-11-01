@@ -32,9 +32,10 @@ pub fn draw(self: *App) !void {
     try self.fill(title, t.title_bar);
     try self.renderer.icon(icons.svg("panel_left"), 12, 9, 16, t.muted);
     const inset = controlsInset(self);
-    self.clip(.{ .x = 44, .y = 0, .w = @max(0, title.w - inset - 56), .h = 34 });
+    self.clip(.{ .x = 44, .y = 0, .w = @max(0, title.w - inset - 94), .h = 34 });
     try self.renderer.textUi(std.fs.path.basename(self.workspace.root), 44, 23, t.text);
     self.renderer.setClip(null);
+    try self.renderer.icon(icons.svg("ui:database"), title.w - inset - 28, 9, 16, t.muted);
     const breeze = self.controls.breeze;
     const diameter: f32 = if (breeze) 18 else 24;
     const margin: f32 = if (breeze) 2 else 5;

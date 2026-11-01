@@ -9,6 +9,16 @@ const syntax = zid.syntax;
 const icons = @import("icons");
 const pure_geometry = @import("geometry.zig");
 
+/// Zed's `Tab::container_height` is `DynamicSpacing::Base32` (32px at the Default density)
+/// with a 1px bottom border (`crates/ui/src/components/tab.rs`), so content is 31px tall.
+/// Children are vertically centred (`items_center`), and the label baseline keeps the
+/// optical offset from the previous 35px layout.
+const content_offset: f32 = 1;
+const padding_x: f32 = 8;
+const icon_size: f32 = 16;
+const label_gap: f32 = 8;
+const label_baseline_offset: f32 = 21;
+
 /// Shared tab content and end-slot geometry for painting and parent hit testing.
 /// Zed's square close control is 24px; this view reserves a 28px trailing slot.
 pub const TabGeometry = struct {
@@ -20,21 +30,29 @@ pub const TabGeometry = struct {
     end_slot: Rect,
     close_icon_x: f32,
     close_icon_y: f32,
+    dirty_dot_x: f32,
+    dirty_dot_y: f32,
 };
+
+fn centredY(tab: Rect, size: f32) f32 {
+    return tab.y + @round((tab.h - content_offset - size) / 2);
+}
 
 pub fn geometry(tab: Rect) TabGeometry {
     return .{
-        .label_clip = .{ .x = tab.x + 8, .y = tab.y, .w = @max(0, tab.w - 36), .h = tab.h },
-        .icon_x = tab.x + 10,
-        .icon_y = tab.y + 10,
-        .label_x = tab.x + 34,
-        .label_baseline = tab.y + 23,
+        .label_clip = .{ .x = tab.x + padding_x, .y = tab.y, .w = @max(0, tab.w - 36), .h = tab.h },
+        .icon_x = tab.x + padding_x,
+        .icon_y = centredY(tab, icon_size),
+        .label_x = tab.x + padding_x + icon_size + label_gap,
+        .label_baseline = tab.y + label_baseline_offset,
         .end_slot = blk: {
             const slot = pure_geometry.tabEndSlot(tab.x, tab.w, tab.y, tab.h);
             break :blk .{ .x = slot.x, .y = slot.y, .w = slot.w, .h = slot.h };
         },
         .close_icon_x = tab.x + tab.w - 24,
-        .close_icon_y = tab.y + 10,
+        .close_icon_y = centredY(tab, 14),
+        .dirty_dot_x = tab.x + tab.w - 22,
+        .dirty_dot_y = centredY(tab, 10),
     };
 }
 
@@ -67,17 +85,18 @@ pub fn drawTabs(self: *App) !void {
         const r: Rect = .{ .x = x, .y = bar.y, .w = w, .h = bar.h };
         const g = geometry(r);
         const is_active = index == self.workspace.active and !self.keymap_editor_open;
+        // Zed's inactive tabs keep their 1px bottom border; active tabs open into the editor.
         if (is_active) {
             try self.fill(r, t.active_tab);
             try self.renderer.rect(x, bar.y, w, 1, t.accent);
-        }
+        } else try self.fill(.{ .x = x, .y = bar.y, .w = w, .h = bar.h - 1 }, t.inactive_tab);
         try self.renderer.rect(x + w - 1, bar.y, 1, bar.h, t.border);
         const name = if (doc.path) |path| std.fs.path.basename(path) else "untitled";
         self.clip(g.label_clip);
         try self.drawIcon(self.fileIcon(doc.path orelse ""), g.icon_x, g.icon_y, 16, t.muted);
         try self.renderer.textUi(name, g.label_x, g.label_baseline, if (is_active) t.text else t.muted);
         self.clip(bar);
-        if (doc.dirty()) try self.renderer.icon(icons.svg("circle"), x + w - 22, bar.y + 12, 10, t.muted) else try self.renderer.icon(icons.svg("close"), g.close_icon_x, g.close_icon_y, 14, t.muted);
+        if (doc.dirty()) try self.renderer.icon(icons.svg("circle"), g.dirty_dot_x, g.dirty_dot_y, 10, t.muted) else try self.renderer.icon(icons.svg("close"), g.close_icon_x, g.close_icon_y, 14, t.muted);
         try self.tab_hits.append(self.gpa, .{ .rect = r, .index = index });
         x += w;
     }
@@ -85,12 +104,12 @@ pub fn drawTabs(self: *App) !void {
     if (self.keymap_editor_open and x < bar.x + bar.w) {
         const label = "Keymap Editor";
         const w = @min(self.renderer.widthUi(label) + 72, bar.x + bar.w - x);
+        const g = geometry(.{ .x = x, .y = bar.y, .w = w, .h = bar.h });
         try self.fill(.{ .x = x, .y = bar.y, .w = w, .h = bar.h }, t.active_tab);
         try self.renderer.rect(x, bar.y, w, 1, t.accent);
         try self.renderer.rect(x + w - 1, bar.y, 1, bar.h, t.border);
-        try self.renderer.icon(icons.svg("ui:notepad"), x + 10, bar.y + 10, 16, t.muted);
-        try self.renderer.textUi(label, x + 34, bar.y + 23, t.text);
-        const g = geometry(.{ .x = x, .y = bar.y, .w = w, .h = bar.h });
+        try self.renderer.icon(icons.svg("ui:notepad"), g.icon_x, g.icon_y, 16, t.muted);
+        try self.renderer.textUi(label, g.label_x, g.label_baseline, t.text);
         try self.renderer.icon(icons.svg("close"), g.close_icon_x, g.close_icon_y, 14, t.muted);
         self.keymap_tab = .{ .x = x, .y = bar.y, .w = w, .h = bar.h };
     }

@@ -71,6 +71,8 @@ pub const Command = enum {
     @"project_panel::CollapseAllEntries",
     @"project_panel::Open",
     // editor
+    @"editor::Hover",
+    @"editor::GoToDefinition",
     @"editor::Cancel",
     @"editor::Backspace",
     @"editor::Delete",
@@ -480,7 +482,16 @@ fn runEditor(app: *App, doc: *zid.Document, c: Command, arg: ?std.json.Value, pa
     const gpa = app.gpa;
     var reveal = true;
     switch (c) {
+        .@"editor::Hover" => {
+            app.requestHover();
+            reveal = false;
+        },
+        .@"editor::GoToDefinition" => {
+            app.requestDefinition();
+            reveal = false;
+        },
         .@"editor::Cancel" => {
+            if (app.dismissHover()) return;
             doc.anchor = doc.cursor;
             reveal = false;
         },

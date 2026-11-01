@@ -1,13 +1,14 @@
 //! Database viewer backend. No rendering or global I/O state.
 const std = @import("std");
 pub const sqlite = @import("sqlite.zig");
+pub const remote = @import("remote.zig");
 
 /// Credentials are referenced, never serialized or formatted by this module.
 pub const SecretRef = struct { name: []const u8 };
 pub const Connection = union(enum) {
     sqlite: sqlite.Connection,
-    mysql: Remote,
-    postgres: Remote,
+    mysql: remote.Connection,
+    postgres: remote.Connection,
     convex: Remote,
 };
 pub const Remote = struct { endpoint: []const u8, credential: ?SecretRef = null };
@@ -36,4 +37,5 @@ pub fn query(a: std.mem.Allocator, io: std.Io, conn: Connection, sql: []const u8
 
 test {
     _ = sqlite;
+    _ = remote;
 }

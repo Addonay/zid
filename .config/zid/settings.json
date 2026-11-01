@@ -1,0 +1,10 @@
+{
+    "font_size": 15,
+    "line_height": 23,
+    "panel_width": 240,
+    "tab_size": 4,
+    "cursor_blink": true,
+    "auto_fold_dirs": true,
+    "show_indent_guides": false,
+    "theme_name": "one_dark_pro_glass"
+}

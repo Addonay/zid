@@ -28,7 +28,7 @@ pub const Layout = struct {
         errdefer tree.deinit();
         const title = try tree.new_leaf(.{ .size = .{ .width = .auto, .height = .length(34) }, .flex_shrink = 0 });
         const panel = try tree.new_leaf(.{ .size = .{ .width = .length(240), .height = .auto }, .flex_shrink = 0 });
-        const tabs = try tree.new_leaf(.{ .size = .{ .width = .auto, .height = .length(35) }, .flex_shrink = 0 });
+        const tabs = try tree.new_leaf(.{ .size = .{ .width = .auto, .height = .length(32) }, .flex_shrink = 0 });
         const editor = try tree.new_leaf(.{ .flex_grow = 1, .min_size = .{ .height = .length(0), .width = .length(0) } });
         const pane = try tree.new_with_children(.{ .flex_direction = .column, .flex_grow = 1, .min_size = .{ .width = .length(0), .height = .length(0) } }, &.{ tabs, editor });
         const body = try tree.new_with_children(.{ .flex_grow = 1, .min_size = .{ .width = .length(0), .height = .length(0) } }, &.{ panel, pane });
@@ -70,8 +70,8 @@ test "shell resizes and hides project panel without overlapping status" {
     try l.resize(1000, 700, 240);
     const editor = try l.rect(l.editor);
     try std.testing.expectEqual(@as(f32, 240), editor.x);
-    try std.testing.expectEqual(@as(f32, 69), editor.y);
-    try std.testing.expectEqual(@as(f32, 605), editor.h);
+    try std.testing.expectEqual(@as(f32, 66), editor.y);
+    try std.testing.expectEqual(@as(f32, 608), editor.h);
     try l.resize(640, 480, 0);
     const small = try l.rect(l.editor);
     try std.testing.expectEqual(@as(f32, 0), small.x);

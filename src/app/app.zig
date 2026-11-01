@@ -31,6 +31,13 @@ const modals = @import("views/modals.zig");
 const recent_projects = @import("recent_projects.zig");
 
 pub const App = struct {
+    database: @import("database.zig").State = .{},
+    lsp: ?@import("lsp.zig").Controller = null,
+    lsp_root: ?[]u8 = null,
+    lsp_dirty: bool = false,
+    lsp_attempted: bool = false,
+    hover_scroll: usize = 0,
+    hover_rect: Rect = .{},
     gpa: std.mem.Allocator,
     io: std.Io,
     workspace: *zid.Workspace,
@@ -82,6 +89,7 @@ pub const App = struct {
     tab_hits: std.ArrayList(struct { rect: Rect, index: usize }) = .empty,
     message: [512]u8 = @splat(0),
     message_len: usize = 0,
+    message_until: u64 = 0,
     dialog: enum { none, open, save, close, quit, settings } = .none,
     project_collapsed: bool = false,
     /// Settings dialog state: page index, focused item among visible items, content scroll (px),
@@ -145,12 +153,18 @@ pub const App = struct {
         self.recent.load(io, data_dir) catch |err| log.warn("recent projects: {s}", .{@errorName(err)});
         // Headless (screenshot) runs must not rewrite the user's recent projects.
         self.persist_recent = !hidden;
+        if (!hidden) {
+            self.lsp_root = gpa.dupe(u8, workspace.root) catch null;
+        }
         self.touchRecent(workspace.root) catch |err| log.warn("recent projects: {s}", .{@errorName(err)});
         sdl.keyboard.startTextInput(window) catch {};
         log.info("window ready: SDL_GPU Vulkan, project={s}, files={d}", .{ workspace.root, workspace.files.items.len });
         return self;
     }
     pub fn deinit(self: *App) void {
+        if (self.lsp) |*lsp| lsp.deinit();
+        if (self.lsp_root) |root| self.gpa.free(root);
+        self.database.deinit(self.io);
         self.keymap.deinit();
         self.closeModal();
         self.keymap_view.deinit(self.gpa);
@@ -187,13 +201,63 @@ pub const App = struct {
         }
         if (x < 5) return .resize_left;
         if (x > w - 5) return .resize_right;
+        if (y < 34 and userdata != null and @as(f32, @floatFromInt(x)) >= @as(f32, @floatFromInt(w)) - title_bar.controlsInset(userdata.?) - 38) return .normal;
         if (y < 34 and x > 40 and @as(f32, @floatFromInt(x)) < @as(f32, @floatFromInt(w)) - (if (userdata) |self| title_bar.controlsInset(self) else 126)) return .draggable;
         return .normal;
     }
     pub fn notice(self: *App, comptime fmt: []const u8, args: anytype) void {
         const text = std.fmt.bufPrint(&self.message, fmt, args) catch self.message[0..0];
         self.message_len = text.len;
+        self.message_until = sdl.timer.getMillisecondsSinceInit() +| 5000;
         log.info("{s}", .{text});
+    }
+    pub fn currentDiagnostics(self: *const App) ?zid.lsp.protocol.Diagnostics {
+        const doc = self.workspace.current();
+        const path = doc.path orelse return null;
+        const lsp = if (self.lsp) |*controller| controller else return null;
+        return lsp.diagnosticsFor(path, doc.instance_id, doc.revision);
+    }
+    pub fn requestHover(self: *App) void {
+        if (self.lsp) |*lsp| {
+            self.hover_scroll = 0;
+            lsp.requestHover(self.workspace.current()) catch |err| self.notice("Hover: {s}", .{@errorName(err)});
+        } else self.notice("ZLS is not available for this document", .{});
+    }
+    pub fn requestDefinition(self: *App) void {
+        if (self.lsp) |*lsp| {
+            lsp.requestDefinition(self.workspace.current()) catch |err| self.notice("Definition: {s}", .{@errorName(err)});
+        } else self.notice("ZLS is not available for this document", .{});
+    }
+    /// Opens a local target and maps the negotiated LSP column to a byte offset.
+    fn navigateDefinition(self: *App, target: @import("lsp.zig").Definition) !void {
+        const previous = self.workspace.active;
+        errdefer self.workspace.active = previous;
+        try self.workspace.open(target.path);
+        const doc = self.workspace.current();
+        if (doc.large != null or doc.preview_only or doc.buffer.len() > @import("lsp.zig").max_document_bytes) return error.TargetTooLarge;
+        const text = try doc.buffer.toOwnedSlice(self.gpa);
+        defer self.gpa.free(text);
+        const offset = try zid.lsp.position.toOffset(text, target.position, target.encoding);
+        doc.move(offset, false);
+        self.panel_focus = false;
+        self.keymap_editor_open = false;
+        try self.revealCursor();
+    }
+    pub fn dismissHover(self: *App) bool {
+        if (self.lsp) |*lsp| {
+            if (lsp.definition_pending) {
+                lsp.clearDefinition();
+                lsp.clearHover();
+                self.hover_rect = .{};
+                return true;
+            }
+            if (lsp.hover_pending or lsp.hoverFor(self.workspace.current()) != null) {
+                lsp.clearHover();
+                self.hover_rect = .{};
+                return true;
+            }
+        }
+        return false;
     }
     pub fn configurationStamp(self: *App) u64 {
         var hash = std.hash.Wyhash.init(0);
@@ -257,6 +321,46 @@ pub const App = struct {
     /// Memory-only completion pump shared by the interactive loop and scripted
     /// offscreen frames. File operations remain on each document's worker.
     pub fn pollAsync(self: *App) void {
+        self.database.poll(self.io);
+        if (self.lsp_root) |root| {
+            if (!std.mem.eql(u8, root, self.workspace.root)) {
+                if (self.lsp) |*lsp| lsp.deinit();
+                self.lsp = null;
+                self.gpa.free(root);
+                self.lsp_root = self.gpa.dupe(u8, self.workspace.root) catch null;
+                self.lsp_attempted = false;
+                self.lsp_dirty = true;
+            }
+        }
+        if (self.lsp_root != null and !self.lsp_attempted) {
+            for (self.workspace.documents.items) |*doc| {
+                const path = doc.path orelse continue;
+                if (doc.large != null or doc.preview_only or doc.buffer.len() > @import("lsp.zig").max_document_bytes or !std.mem.endsWith(u8, path, ".zig")) continue;
+                self.lsp_attempted = true;
+                self.lsp = @import("lsp.zig").Controller.start(self.gpa, self.io, self.workspace.root, &.{"zls"}) catch |err| blk: {
+                    self.notice("ZLS unavailable: {s}", .{@errorName(err)});
+                    break :blk null;
+                };
+                break;
+            }
+        }
+        if (self.lsp) |*lsp| {
+            const generation = lsp.generation;
+            lsp.poll(self.workspace) catch |err| {
+                self.notice("ZLS stopped: {s}", .{@errorName(err)});
+                lsp.deinit();
+                self.lsp = null;
+                self.lsp_dirty = true;
+                return;
+            };
+            if (generation != lsp.generation) self.lsp_dirty = true;
+            if (lsp.takeDefinition(self.workspace.current())) |target_value| {
+                var target = target_value;
+                defer target.deinit(self.gpa);
+                self.navigateDefinition(target) catch |err| self.notice("Definition: {s}", .{@errorName(err)});
+                self.lsp_dirty = true;
+            }
+        }
         self.cancelInactiveCopies();
         self.pollLargeCopy();
         if (self.workspace.current().large) |*large| _ = large.poll(&.{});
@@ -274,7 +378,7 @@ pub const App = struct {
                 const state = l.poll(&.{});
                 break :blk l.expected_copy != null or l.needs_redraw or ((state.loading or !state.complete) and l.failure == null);
             } else false;
-            const wait: u31 = if (indexing) 16 else if (blink) @intCast(500 - @min(500, now - self.last_blink)) else 1000;
+            const wait: u31 = if (indexing or self.database.job != null) 16 else if (self.lsp != null) 100 else if (blink) @intCast(500 - @min(500, now - self.last_blink)) else 1000;
             var dirty = false;
             if (sdl.events.waitAndPopTimeout(wait)) |pending_event| {
                 self.event(pending_event) catch |err| self.notice("{s}", .{@errorName(err)});
@@ -288,6 +392,15 @@ pub const App = struct {
                 }
             }
             self.pollAsync();
+            if (self.message_len > 0 and sdl.timer.getMillisecondsSinceInit() >= self.message_until) {
+                self.message_len = 0;
+                dirty = true;
+            }
+            if (self.lsp_dirty) {
+                dirty = true;
+                self.lsp_dirty = false;
+            }
+            if (self.database.open) dirty = true;
             if (self.workspace.current().large) |*large| {
                 _ = large.poll(&.{});
                 if (indexing) dirty = true;
@@ -758,8 +871,13 @@ pub const App = struct {
         }
         if (self.dialog != .none) return;
         if (try modals.clickModal(self, mx, my)) return;
+        if (my < 34 and mx >= self.layout.width - title_bar.controlsInset(self) - 36 and mx < self.layout.width - title_bar.controlsInset(self)) {
+            if (self.database.open) self.database.cancel(self.io);
+            self.database.open = !self.database.open;
+            return;
+        }
         const status = try self.layout.rect(self.layout.status);
-        if (status.contains(mx, my)) {
+        if (!self.database.open and status.contains(mx, my)) {
             if (mx < 42) {
                 try self.runCommand(.@"workspace::ToggleLeftDock");
                 return;
@@ -779,6 +897,10 @@ pub const App = struct {
                 },
                 else => try self.runCommand(.@"zed::Quit"),
             } else if (mx < 36) try self.runCommand(.@"workspace::ToggleLeftDock");
+            return;
+        }
+        if (self.database.open) {
+            @import("database_view.zig").click(self, mx, my);
             return;
         }
         if (self.keymap_editor_open and self.keymap_tab.contains(mx, my)) {
@@ -869,13 +991,17 @@ pub const App = struct {
         }
         self.renderer.drawOverlay();
         if (!self.keymap_editor_open) try @import("views/editor.zig").drawCaret(self);
+        self.hover_rect = .{};
+        if (!self.keymap_editor_open and self.modal == .none and self.dialog == .none and !self.database.open) {
+            if (self.lsp) |*lsp| if (lsp.hoverFor(self.workspace.current())) |hover| try @import("views/hover.zig").draw(self, hover);
+        }
         const status = try self.layout.rect(self.layout.status);
         try self.fill(status, t.status);
         try self.renderer.rect(0, status.y, status.w, 1, t.border);
         try self.renderer.icon(@import("icons").svg("panel_left"), 12, status.y + 5, 16, t.muted);
         try self.renderer.icon(@import("icons").svg("ui:settings"), status.w - 26, status.y + 5, 16, t.muted);
         if (self.message_len > 0) {
-            self.clip(.{ .x = 52, .y = status.y, .w = @max(0, status.w - 480), .h = status.h });
+            self.clip(.{ .x = 52, .y = status.y, .w = @max(0, status.w - @min(480, status.w * 0.5) - 52), .h = status.h });
             try self.renderer.textUi(self.message[0..self.message_len], 52, status.y + 18, t.text);
             self.renderer.setClip(null);
         } else if (self.workspace.current().large != null) {
@@ -884,6 +1010,20 @@ pub const App = struct {
             try self.renderer.textUi("Read-only preview: line exceeds 64 KiB", 52, status.y + 18, t.error_text);
         } else if (self.renderer.degraded) {
             try self.renderer.textUi("Some glyphs replaced: font/atlas limit", 52, status.y + 18, t.error_text);
+        } else if (self.currentDiagnostics()) |diagnostics| {
+            var label: [512]u8 = undefined;
+            const cursor_row = self.workspace.current().lineOf(self.workspace.current().cursor);
+            var detail: []const u8 = "";
+            for (diagnostics.diagnostics) |diagnostic| {
+                if (diagnostic.range.start.line == cursor_row) {
+                    detail = diagnostic.message;
+                    break;
+                }
+            }
+            const text = std.fmt.bufPrint(&label, "ZLS{s}: {d} diagnostics {s}", .{ if (diagnostics.version == null) @as([]const u8, " ~") else "", diagnostics.diagnostics.len, detail }) catch "ZLS: diagnostics";
+            self.clip(.{ .x = 52, .y = status.y, .w = @max(0, status.w - @min(480, status.w * 0.5) - 52), .h = status.h });
+            try self.renderer.textUi(text, 52, status.y + 18, t.muted);
+            self.renderer.setClip(null);
         }
         const doc = self.workspace.current();
         const lang = syntax.Language.fromPath(doc.path orelse "");
@@ -891,6 +1031,7 @@ pub const App = struct {
         const row = doc.lineOf(doc.cursor);
         const text = if (doc.large) |large| try std.fmt.bufPrint(&info, "Byte {d} / {d}    Selected: {d} bytes", .{ large.offset, large.size, large.selection().end - large.selection().start }) else try std.fmt.bufPrint(&info, "{d}:{d}    {s}    UTF-8    {s}    Spaces: {d}", .{ row + 1, doc.cursor - doc.lineStart(row) + 1, if (doc.crlf) @as([]const u8, "CRLF") else "LF", lang.displayName(), self.settings.tab_size });
         try self.renderer.textUi(text, @max(52, status.w - self.renderer.widthUi(text) - 40), status.y + 18, t.text);
+        if (self.database.open) try @import("database_view.zig").draw(self);
         try modals.drawModal(self);
         if (self.dialog != .none) try self.drawDialog();
         try self.renderer.end();

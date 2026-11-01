@@ -8,6 +8,7 @@ test {
     _ = @import("fuzzy.zig");
     _ = @import("line_input.zig");
     _ = @import("recent_projects.zig");
+    _ = @import("lsp.zig");
     _ = @import("theme_assets");
 }
 

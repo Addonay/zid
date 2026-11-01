@@ -46,6 +46,14 @@ pub const LineInput = struct {
             if (clean[n] < 0x20) continue;
             n += 1;
         }
+        // The staging buffer can fill in the middle of a UTF-8 sequence.
+        // Drop that incomplete sequence before passing it to replaceSelection.
+        if (n == clean.len) {
+            var start = n - 1;
+            while (start > 0 and clean[start] & 0xc0 == 0x80) start -= 1;
+            const width = std.unicode.utf8ByteSequenceLength(clean[start]) catch 1;
+            if (n - start < width) n = start;
+        }
         self.replaceSelection(clean[0..n]);
     }
     fn prev(self: *const LineInput, at: usize) usize {
@@ -149,4 +157,14 @@ test "line input edits, selects and respects codepoints" {
     input.selectAll();
     input.insert("a\nb");
     try std.testing.expectEqualStrings("a b", input.text());
+}
+
+test "line input does not split a codepoint at staging limit" {
+    var input: LineInput = .{};
+    var value: [257]u8 = undefined;
+    @memset(value[0..255], 'a');
+    @memcpy(value[255..], "é");
+    input.insert(&value);
+    try std.testing.expectEqual(@as(usize, 255), input.text().len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(input.text()));
 }

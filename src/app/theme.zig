@@ -5,6 +5,27 @@ const token = @import("zid").syntax;
 const sources = @import("theme_assets");
 pub const Color = [4]u8;
 pub const ThemeName = sources.ThemeName;
+/// Zed's `ThemeColors::dark()` / `light()` values for keys absent from a theme file.
+/// Derived from `neutral()` in `.ref/zed/crates/theme/src/default_colors.rs` (Sand scale):
+/// `editor_indent_guide` = dark_alpha step 4 / light_alpha step 5, and so on.
+const Fallback = struct {
+    indent_guide: Color,
+    indent_guide_active: Color,
+    active_line_number: Color,
+    inactive_tab: Color,
+};
+const dark_fallback: Fallback = .{
+    .indent_guide = .{ 254, 254, 243, 27 },
+    .indent_guide_active = .{ 255, 250, 237, 45 },
+    .active_line_number = .{ 255, 252, 244, 176 },
+    .inactive_tab = .{ 25, 25, 24, 255 },
+};
+const light_fallback: Fallback = .{
+    .indent_guide = .{ 31, 24, 0, 33 },
+    .indent_guide_active = .{ 25, 19, 0, 41 },
+    .active_line_number = .{ 99, 99, 94, 255 },
+    .inactive_tab = .{ 249, 249, 248, 255 },
+};
 const TokenStyle = struct { color: ?Color = null, italic: bool = false };
 pub const Theme = struct {
     background: Color = .{ 59, 65, 77, 255 },
@@ -40,8 +61,10 @@ pub const Theme = struct {
     ghost_element_hover: Color = .{ 54, 60, 70, 255 },
     ghost_element_selected: Color = .{ 69, 74, 86, 255 },
     placeholder: Color = .{ 135, 138, 152, 255 },
-    indent_guide: Color = .{ 59, 62, 69, 255 },
-    indent_guide_active: Color = .{ 84, 89, 99, 255 },
+    indent_guide: Color = dark_fallback.indent_guide,
+    indent_guide_active: Color = dark_fallback.indent_guide_active,
+    active_line_number: Color = dark_fallback.active_line_number,
+    inactive_tab: Color = dark_fallback.inactive_tab,
     scrollbar_thumb: Color = .{ 200, 204, 212, 76 },
     tokens: [@typeInfo(token.Kind).@"enum".field_names.len]TokenStyle = @splat(.{}),
 
@@ -62,12 +85,18 @@ pub const Theme = struct {
             if (n != .string or !std.mem.eql(u8, n.string, name)) continue;
             const style = entry.object.get("style") orelse return error.InvalidTheme;
             if (style != .object) return error.InvalidTheme;
-            var result: Theme = .{};
+            const fallback = if (entry.object.get("appearance")) |appearance| if (appearance == .string and std.mem.eql(u8, appearance.string, "light")) light_fallback else dark_fallback else dark_fallback;
+            var result: Theme = .{
+                .indent_guide = fallback.indent_guide,
+                .indent_guide_active = fallback.indent_guide_active,
+                .active_line_number = fallback.active_line_number,
+                .inactive_tab = fallback.inactive_tab,
+            };
             const fields = .{
-                .{ "background", "background" },          .{ "surface", "surface.background" }, .{ "border", "border" },                    .{ "text", "text" },              .{ "muted", "text.muted" },         .{ "line_number", "editor.line_number" }, .{ "selected", "element.selected" },           .{ "accent", "text.accent" },                        .{ "error_text", "error" },
-                .{ "title_bar", "title_bar.background" }, .{ "tab_bar", "tab_bar.background" }, .{ "active_tab", "tab.active_background" }, .{ "panel", "panel.background" }, .{ "editor", "editor.background" }, .{ "status", "status_bar.background" },   .{ "editor_foreground", "editor.foreground" }, .{ "active_line", "editor.active_line.background" },
-                .{ "border_variant", "border.variant" },  .{ "border_focused", "border.focused" }, .{ "elevated_surface", "elevated_surface.background" }, .{ "element_background", "element.background" }, .{ "element_hover", "element.hover" }, .{ "element_selected", "element.selected" }, .{ "ghost_element_hover", "ghost_element.hover" }, .{ "ghost_element_selected", "ghost_element.selected" }, .{ "placeholder", "text.placeholder" },
-                .{ "indent_guide", "panel.indent_guide" }, .{ "indent_guide_active", "panel.indent_guide_active" }, .{ "scrollbar_thumb", "scrollbar.thumb.background" },
+                .{ "background", "background" },                          .{ "surface", "surface.background" },                   .{ "border", "border" },                         .{ "text", "text" },                                  .{ "muted", "text.muted" },                  .{ "line_number", "editor.line_number" },          .{ "selected", "element.selected" },                     .{ "accent", "text.accent" },                        .{ "error_text", "error" },
+                .{ "title_bar", "title_bar.background" },                 .{ "tab_bar", "tab_bar.background" },                   .{ "active_tab", "tab.active_background" },      .{ "panel", "panel.background" },                     .{ "editor", "editor.background" },          .{ "status", "status_bar.background" },            .{ "editor_foreground", "editor.foreground" },           .{ "active_line", "editor.active_line.background" }, .{ "border_variant", "border.variant" },
+                .{ "border_focused", "border.focused" },                  .{ "elevated_surface", "elevated_surface.background" }, .{ "element_background", "element.background" }, .{ "element_hover", "element.hover" },                .{ "element_selected", "element.selected" }, .{ "ghost_element_hover", "ghost_element.hover" }, .{ "ghost_element_selected", "ghost_element.selected" }, .{ "placeholder", "text.placeholder" },              .{ "indent_guide", "editor.indent_guide" },
+                .{ "indent_guide_active", "editor.indent_guide_active" }, .{ "active_line_number", "editor.active_line_number" }, .{ "inactive_tab", "tab.inactive_background" },  .{ "scrollbar_thumb", "scrollbar.thumb.background" },
             };
             inline for (fields) |pair| if (style.object.get(pair[1])) |value| {
                 if (try parseColor(value)) |color| @field(result, pair[0]) = color;
@@ -165,4 +194,15 @@ test "JSON theme adapter retains transparency and italic token styles" {
     try std.testing.expectEqual(Color{ 1, 2, 3, 4 }, t.background);
     try std.testing.expectEqual(Color{ 170, 187, 204, 255 }, t.syntaxColor(.keyword_control));
     try std.testing.expect(t.italic(.keyword));
+}
+test "editor indent guide keys fall back to Zed's appearance-based neutral scale" {
+    const one_dark = try Theme.builtin(std.testing.allocator, .one_dark);
+    try std.testing.expectEqual(dark_fallback.indent_guide, one_dark.indent_guide);
+    try std.testing.expectEqual(dark_fallback.indent_guide_active, one_dark.indent_guide_active);
+    // One Dark upstream JSON defines editor.active_line_number, so only absent keys fall back.
+    try std.testing.expectEqual(Color{ 208, 212, 218, 255 }, one_dark.active_line_number);
+    try std.testing.expectEqual(Color{ 220, 224, 229, 255 }, one_dark.text);
+    const light = try Theme.parse(std.testing.allocator, "{\"themes\":[{\"name\":\"Example\",\"appearance\":\"light\",\"style\":{}}]}", "Example");
+    try std.testing.expectEqual(light_fallback.indent_guide, light.indent_guide);
+    try std.testing.expectEqual(light_fallback.inactive_tab, light.inactive_tab);
 }
