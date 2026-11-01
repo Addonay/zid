@@ -215,6 +215,29 @@ pub const App = struct {
         self.caret_visible = self.focused;
         self.last_blink = sdl.timer.getMillisecondsSinceInit();
     }
+    fn cancelInactiveCopies(self: *App) void {
+        for (self.workspace.documents.items, 0..) |*doc, i| {
+            if (i != self.workspace.active) if (doc.large) |*large| large.cancelCopy();
+        }
+    }
+
+    fn pollLargeCopy(self: *App) void {
+        const large = if (self.workspace.current().large) |*l| l else return;
+        const result = large.worker.takeCopy() orelse return;
+        defer if (result.bytes) |bytes| self.gpa.free(bytes);
+        if (large.expected_copy == null or large.expected_copy.? != result.generation) return;
+        large.expected_copy = null;
+        if (result.failure) |err| {
+            self.notice("Copy: {s}", .{@errorName(err)});
+        } else if (result.bytes) |bytes| {
+            sdl.clipboard.setText(bytes) catch |err| {
+                self.notice("Copy: {s}", .{@errorName(err)});
+                return;
+            };
+            self.clipboard_whole_line = false;
+        }
+    }
+
     pub fn run(self: *App) !void {
         self.window.setHitTest(App, hitTest, self) catch {};
         try self.draw();
@@ -225,19 +248,22 @@ pub const App = struct {
             const blink = self.focused and self.settings.cursor_blink and self.dialog == .none and !self.panel_focus;
             const indexing = if (self.workspace.current().large) |*l| blk: {
                 const state = l.poll(&.{});
-                break :blk l.needs_redraw or ((state.loading or !state.complete) and l.failure == null);
+                break :blk l.expected_copy != null or l.needs_redraw or ((state.loading or !state.complete) and l.failure == null);
             } else false;
             const wait: u31 = if (indexing) 16 else if (blink) @intCast(500 - @min(500, now - self.last_blink)) else 1000;
             var dirty = false;
             if (sdl.events.waitAndPopTimeout(wait)) |pending_event| {
                 self.event(pending_event) catch |err| self.notice("{s}", .{@errorName(err)});
+                self.cancelInactiveCopies();
                 dirty = true;
                 var budget: usize = 0;
                 while (budget < 128) : (budget += 1) {
                     const next = sdl.events.poll() orelse break;
                     self.event(next) catch |err| self.notice("{s}", .{@errorName(err)});
+                    self.cancelInactiveCopies();
                 }
             }
+            self.pollLargeCopy();
             if (self.workspace.current().large) |*large| {
                 _ = large.poll(&.{});
                 if (indexing) dirty = true;
@@ -772,7 +798,7 @@ pub const App = struct {
         const lang = syntax.Language.fromPath(doc.path orelse "");
         var info: [256]u8 = undefined;
         const row = doc.lineOf(doc.cursor);
-        const text = if (doc.large) |large| try std.fmt.bufPrint(&info, "Byte {d} / {d}", .{ large.offset, large.size }) else try std.fmt.bufPrint(&info, "{d}:{d}    {s}    UTF-8    {s}    Spaces: {d}", .{ row + 1, doc.cursor - doc.lineStart(row) + 1, if (doc.crlf) @as([]const u8, "CRLF") else "LF", lang.displayName(), self.settings.tab_size });
+        const text = if (doc.large) |large| try std.fmt.bufPrint(&info, "Byte {d} / {d}    Selected: {d} bytes", .{ large.offset, large.size, large.selection().end - large.selection().start }) else try std.fmt.bufPrint(&info, "{d}:{d}    {s}    UTF-8    {s}    Spaces: {d}", .{ row + 1, doc.cursor - doc.lineStart(row) + 1, if (doc.crlf) @as([]const u8, "CRLF") else "LF", lang.displayName(), self.settings.tab_size });
         try self.renderer.textUi(text, @max(52, status.w - self.renderer.widthUi(text) - 40), status.y + 18, t.text);
         try modals.drawModal(self);
         if (self.dialog != .none) try self.drawDialog();

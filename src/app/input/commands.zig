@@ -266,27 +266,30 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
     const doc = app.workspace.current();
     if (doc.large != null and isEditor(c)) {
         const l = &doc.large.?;
-        switch (c) {
-            .@"editor::MoveToBeginning" => {
-                doc.largeNavigate(0);
-                return;
-            },
-            .@"editor::MoveToEnd" => {
-                doc.largeNavigate(l.size);
-                return;
-            },
-            else => {},
-        }
         const page: i64 = @intCast(app.pageLines());
+        const sel = l.selection();
         switch (c) {
+            .@"editor::MoveToBeginning" => l.move(0, false),
+            .@"editor::MoveToEnd" => l.move(l.size, false),
+            .@"editor::SelectToBeginning" => l.move(0, true),
+            .@"editor::SelectToEnd" => l.move(l.size, true),
+            .@"editor::SelectAll" => {
+                l.move(l.size, false);
+                l.anchor = 0;
+                l.extend_pending = true;
+            },
+            .@"editor::Copy" => try l.copy(),
+            .@"editor::Cancel" => l.move(l.offset, false),
             .@"editor::MoveUp", .@"editor::LineUp" => l.moveLines(-1),
             .@"editor::MoveDown", .@"editor::LineDown" => l.moveLines(1),
             .@"editor::MovePageUp", .@"editor::PageUp" => l.moveLines(-page),
             .@"editor::MovePageDown", .@"editor::PageDown" => l.moveLines(page),
-            .@"editor::MoveToBeginningOfLine" => l.moveBoundary(.start),
-            .@"editor::MoveToEndOfLine" => l.moveBoundary(.end),
-            .@"editor::MoveLeft" => doc.largeNavigate(l.offset -| 1),
-            .@"editor::MoveRight" => doc.largeNavigate(l.offset +| 1),
+            .@"editor::MoveToBeginningOfLine", .@"editor::SelectToBeginningOfLine" => l.moveBoundary(.start, c == .@"editor::SelectToBeginningOfLine"),
+            .@"editor::MoveToEndOfLine", .@"editor::SelectToEndOfLine" => l.moveBoundary(.end, c == .@"editor::SelectToEndOfLine"),
+            .@"editor::MoveLeft" => l.move(if (sel.start != sel.end) sel.start else l.offset -| 1, false),
+            .@"editor::MoveRight" => l.move(if (sel.start != sel.end) sel.end else l.offset +| 1, false),
+            .@"editor::SelectLeft" => l.move(l.offset -| 1, true),
+            .@"editor::SelectRight" => l.move(l.offset +| 1, true),
             else => return error.UnsupportedLargeFileCommand,
         }
         return;

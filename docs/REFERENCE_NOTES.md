@@ -63,3 +63,8 @@ scroll anchor or display map.
 Large-file navigation uses the reference distinction between logical lines and display
 positions (see `crates/editor/src/scroll.rs`); Zid resolves logical LF boundaries on
 the worker without implementing Zed display maps or column-preserving cursor motion.
+
+The default Linux keymap in `.ref/zed/assets/keymaps/default-linux.json` maps
+Shift+arrows, Shift+Home/End, Ctrl+Shift+Home/End and Select All to editor
+selection actions. Zid uses those actions for large files with byte endpoints;
+line boundaries are resolved asynchronously and do not implement Zed smart Home.

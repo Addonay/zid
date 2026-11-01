@@ -44,3 +44,4 @@ with budgeted chunk newline indexing and stale-file checks. The heap-owned `text
 
 Large-file logical-line and boundary scans run on the text worker in bounded windows;
 the editor submits navigation generations and consumes snapshots without filesystem I/O.
+Keyboard byte selections live in LargeState. Copy uses the worker’s separately superseded owned result; the app checks the expected generation for the active document before sending it to SDL, and cancels pending copies on selection changes or tab switches. Copies are limited to 1 MiB and require valid UTF-8 without NUL bytes. Selection highlighting and mouse selection remain unimplemented.

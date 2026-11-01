@@ -26,6 +26,9 @@ pub const Document = struct {
         worker: *@import("../text/large_worker.zig").Worker,
         size: u64,
         offset: u64 = 0,
+        anchor: u64 = 0,
+        expected_copy: ?u64 = null,
+        extend_pending: bool = false,
         failure: ?anyerror = null,
         requested_offset: ?u64 = null,
         generation: u64 = 0,
@@ -52,6 +55,7 @@ pub const Document = struct {
                 if (snapshot.request_error == null) {
                     if (self.offset != snapshot.offset) self.needs_redraw = true;
                     self.offset = snapshot.offset;
+                    if (!self.extend_pending) self.anchor = self.offset;
                     self.requested_offset = snapshot.offset;
                 }
                 self.line_pending = false;
@@ -59,19 +63,49 @@ pub const Document = struct {
             }
             return snapshot;
         }
+        pub fn cancelCopy(self: *LargeState) void {
+            if (self.expected_copy != null) self.worker.cancelCopy();
+            self.expected_copy = null;
+        }
+        pub fn selection(self: *const LargeState) struct { start: u64, end: u64 } {
+            return .{ .start = @min(self.anchor, self.offset), .end = @max(self.anchor, self.offset) };
+        }
+        pub fn move(self: *LargeState, offset: u64, extend: bool) void {
+            self.cancelCopy();
+            self.offset = @min(offset, self.size);
+            self.extend_pending = extend;
+            if (!extend) self.anchor = self.offset;
+            self.generation = self.worker.requestWindow(self.offset);
+            self.requested_offset = self.offset;
+            self.line_pending = false;
+            self.relative_pending = null;
+            self.needs_redraw = true;
+        }
+        pub fn copy(self: *LargeState) !void {
+            self.cancelCopy();
+            if (self.line_pending) return error.LargeFileNavigationPending;
+            const sel = self.selection();
+            if (sel.start != sel.end) self.expected_copy = self.worker.requestCopy(sel.start, sel.end);
+        }
         pub fn requestLine(self: *LargeState, line: u64) void {
+            self.cancelCopy();
+            self.extend_pending = false;
             self.generation = self.worker.requestLine(line);
             self.line_pending = true;
             self.relative_pending = null;
         }
         pub fn moveLines(self: *LargeState, lines: i64) void {
             if (lines == 0) return;
+            self.cancelCopy();
+            self.extend_pending = false;
             const total = (self.relative_pending orelse 0) +| lines;
             self.generation = self.worker.requestRelative(self.offset, total);
             self.line_pending = true;
             self.relative_pending = total;
         }
-        pub fn moveBoundary(self: *LargeState, which: @import("../text/large_worker.zig").Boundary) void {
+        pub fn moveBoundary(self: *LargeState, which: @import("../text/large_worker.zig").Boundary, extend: bool) void {
+            self.cancelCopy();
+            self.extend_pending = extend;
             self.generation = self.worker.requestBoundary(self.offset, which);
             self.line_pending = true;
             self.relative_pending = null;
@@ -140,11 +174,7 @@ pub const Document = struct {
     }
     pub fn largeNavigate(self: *Document, offset: u64) void {
         if (self.large) |*large| {
-            large.offset = @min(offset, large.size);
-            large.generation = large.worker.requestWindow(large.offset);
-            large.requested_offset = large.offset;
-            large.line_pending = false;
-            large.relative_pending = null;
+            large.move(offset, false);
         }
     }
     fn validateText(text: []const u8) !void {
@@ -533,8 +563,34 @@ test "large state queues relative movements and resolves boundaries" {
     worker.waitForRequest(state.generation);
     _ = state.poll(&.{});
     try std.testing.expectEqual(@as(u64, 4), state.offset);
-    state.moveBoundary(.end);
+    state.moveBoundary(.end, false);
     worker.waitForRequest(state.generation);
     _ = state.poll(&.{});
     try std.testing.expectEqual(@as(u64, 5), state.offset);
+}
+
+test "large byte selection survives window and boundary completion and invalidates copy" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "selection", .data = "abc\ndef\n" });
+    const worker = try @import("../text/large_worker.zig").Worker.createIn(std.testing.allocator, io, tmp.dir, "selection");
+    defer worker.destroy();
+    var state: Document.LargeState = .{ .worker = worker, .size = 8 };
+    state.move(2, false);
+    state.move(3, true);
+    worker.waitForRequest(state.generation);
+    _ = state.poll(&.{});
+    try std.testing.expectEqual(@as(u64, 2), state.selection().start);
+    try std.testing.expectEqual(@as(u64, 3), state.selection().end);
+    state.moveBoundary(.end, true);
+    worker.waitForRequest(state.generation);
+    _ = state.poll(&.{});
+    try std.testing.expectEqual(@as(u64, 2), state.anchor);
+    try state.copy();
+    try std.testing.expect(state.expected_copy != null);
+    state.move(0, false);
+    try std.testing.expect(state.expected_copy == null);
+    try std.testing.expectEqual(@as(u64, 0), state.anchor);
+    try std.testing.expectEqual(@as(u64, 0), state.offset);
 }

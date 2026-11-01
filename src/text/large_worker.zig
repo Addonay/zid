@@ -13,6 +13,8 @@ const std = @import("std");
 const large = @import("large_file.zig");
 
 pub const max_window = large.max_window;
+pub const max_copy = 1024 * 1024;
+pub const CopyResult = struct { generation: u64, bytes: ?[:0]u8 = null, failure: ?anyerror = null };
 pub const Snapshot = struct {
     offset: u64,
     len: usize,
@@ -51,6 +53,9 @@ pub const Worker = struct {
     len: usize = 0,
     first_line: ?u64 = null,
     bytes: [max_window]u8 = undefined,
+    copy_generation: u64 = 0,
+    copy_request: ?struct { start: u64, end: u64 } = null,
+    copy_result: ?CopyResult = null,
 
     pub fn create(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !*Worker {
         return createIn(allocator, io, std.Io.Dir.cwd(), path);
@@ -82,6 +87,54 @@ pub const Worker = struct {
     pub fn requestBoundary(self: *Worker, offset: u64, which: Boundary) u64 {
         return self.submit(.{ .boundary = .{ .offset = offset, .which = which } });
     }
+    /// Copy results are independently superseded and transferred to the caller.
+    pub fn requestCopy(self: *Worker, start: u64, end: u64) u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.copy_generation +%= 1;
+        if (self.copy_result) |result| if (result.bytes) |bytes| self.allocator.free(bytes);
+        self.copy_result = null;
+        self.copy_request = .{ .start = start, .end = end };
+        self.condition.signal(self.io);
+        return self.copy_generation;
+    }
+    pub fn cancelCopy(self: *Worker) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.copy_generation +%= 1;
+        self.copy_request = null;
+        if (self.copy_result) |result| if (result.bytes) |bytes| self.allocator.free(bytes);
+        self.copy_result = null;
+    }
+    pub fn takeCopy(self: *Worker) ?CopyResult {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const result = self.copy_result;
+        self.copy_result = null;
+        return result;
+    }
+    fn copyBytes(self: *Worker, generation: u64, start: u64, end: u64) ![:0]u8 {
+        if (end < start or end > self.file.size()) return error.OutOfRange;
+        if (end - start > max_copy) return error.SelectionTooLarge;
+        const len: usize = @intCast(end - start);
+        const bytes = try self.allocator.allocSentinel(u8, len, 0);
+        errdefer self.allocator.free(bytes);
+        var pos: usize = 0;
+        while (pos < len) {
+            self.mutex.lockUncancelable(self.io);
+            const canceled = self.stop or generation != self.copy_generation;
+            self.mutex.unlock(self.io);
+            if (canceled) return error.Superseded;
+            const n = @min(max_window, len - pos);
+            _ = try self.file.readWindow(self.io, start + pos, bytes[pos..][0..n]);
+            pos += n;
+        }
+        // Even an empty selection must validate the source identity.
+        try self.file.validate(self.io);
+        if (std.mem.indexOfScalar(u8, bytes, 0) != null) return error.ClipboardContainsNul;
+        if (!std.unicode.utf8ValidateSlice(bytes)) return error.ClipboardInvalidUtf8;
+        return bytes;
+    }
     fn submit(self: *Worker, req: Request) u64 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -109,6 +162,7 @@ pub const Worker = struct {
         self.condition.signal(self.io);
         self.mutex.unlock(self.io);
         self.thread.join();
+        if (self.copy_result) |result| if (result.bytes) |bytes| self.allocator.free(bytes);
         self.allocator.destroy(self);
     }
 
@@ -122,13 +176,30 @@ pub const Worker = struct {
         var data: [max_window]u8 = undefined;
         while (true) {
             self.mutex.lockUncancelable(self.io);
-            while (!self.stop and self.request == null and (self.complete or self.index_error != null))
+            while (!self.stop and self.request == null and self.copy_request == null and (self.complete or self.index_error != null))
                 self.condition.waitUncancelable(self.io, &self.mutex);
             if (self.stop) {
                 self.mutex.unlock(self.io);
                 return;
             }
             const req = self.request;
+            const copy = self.copy_request;
+            const copy_gen = self.copy_generation;
+            self.copy_request = null;
+            if (copy != null) {
+                self.mutex.unlock(self.io);
+                const result: CopyResult = if (self.copyBytes(copy_gen, copy.?.start, copy.?.end)) |bytes|
+                    .{ .generation = copy_gen, .bytes = bytes }
+                else |err|
+                    .{ .generation = copy_gen, .failure = err };
+                self.mutex.lockUncancelable(self.io);
+                if (self.copy_generation == copy_gen and !self.stop) {
+                    self.copy_result = result;
+                    self.condition.broadcast(self.io);
+                } else if (result.bytes) |bytes| self.allocator.free(bytes);
+                self.mutex.unlock(self.io);
+                continue;
+            }
             const gen = self.generation;
             self.request = null;
             const index_failed = self.index_error;
@@ -288,6 +359,42 @@ fn awaitIndex(w: *Worker) void {
     while (!w.complete and w.index_error == null)
         w.condition.waitUncancelable(w.io, &w.mutex);
 }
+fn awaitCopy(w: *Worker) CopyResult {
+    w.mutex.lockUncancelable(w.io);
+    defer w.mutex.unlock(w.io);
+    while (w.copy_result == null) w.condition.waitUncancelable(w.io, &w.mutex);
+    const result = w.copy_result.?;
+    w.copy_result = null;
+    return result;
+}
+
+test "queued copy and viewport both complete without losing a request" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "both", .data = "first\nsecond\n" });
+    const w = try Worker.createIn(std.testing.allocator, io, tmp.dir, "both");
+    defer w.destroy();
+    // Publish both together so this covers the copy-priority branch regardless
+    // of how quickly the worker is scheduled.
+    w.mutex.lockUncancelable(io);
+    w.generation += 1;
+    const generation = w.generation;
+    w.request = .{ .window = 6 };
+    w.loading = true;
+    w.copy_generation += 1;
+    w.copy_request = .{ .start = 0, .end = 5 };
+    w.condition.signal(io);
+    w.mutex.unlock(io);
+    const copied = awaitCopy(w);
+    defer if (copied.bytes) |bytes| std.testing.allocator.free(bytes);
+    try std.testing.expectEqualStrings("first", copied.bytes.?);
+    w.waitForRequest(generation);
+    var bytes: [32]u8 = undefined;
+    const snapshot = w.snapshot(&bytes);
+    try std.testing.expectEqualStrings("second\n", bytes[0..snapshot.len]);
+    try std.testing.expectEqual(generation, snapshot.generation);
+}
 
 test "window, line, latest request and indexed progress" {
     const io = std.testing.io;
@@ -427,4 +534,51 @@ test "distant unindexed long line and latest request" {
     try std.testing.expectEqual(gen, snap.generation);
     try std.testing.expectEqual(end + 1, snap.offset);
     try std.testing.expectEqual(@as(?anyerror, null), snap.request_error);
+}
+
+test "bounded copy preserves cross-window UTF-8 and CRLF and rejects invalid text" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = try std.testing.allocator.alloc(u8, max_window + 16);
+    defer std.testing.allocator.free(data);
+    @memset(data, 'a');
+    @memcpy(data[max_window - 2 ..][0..7], "é\r\n中");
+    try tmp.dir.writeFile(io, .{ .sub_path = "copy", .data = data });
+    const w = try Worker.createIn(std.testing.allocator, io, tmp.dir, "copy");
+    defer w.destroy();
+    _ = w.requestCopy(0, data.len);
+    const result = awaitCopy(w);
+    const exact = result.bytes.?;
+    defer std.testing.allocator.free(exact);
+    try std.testing.expectEqualSlices(u8, data, exact);
+    _ = w.requestCopy(max_window - 1, max_window + 2);
+    try std.testing.expectEqual(error.ClipboardInvalidUtf8, awaitCopy(w).failure.?);
+}
+
+test "copy rejects oversized and NUL selections, supersedes and detects changed files" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile(io, "copy", .{});
+    try f.setLength(io, max_copy + 1);
+    try f.writePositionalAll(io, "ok\x00", 0);
+    f.close(io);
+    const w = try Worker.createIn(std.testing.allocator, io, tmp.dir, "copy");
+    defer w.destroy();
+    _ = w.requestCopy(0, max_copy + 1);
+    try std.testing.expectEqual(error.SelectionTooLarge, awaitCopy(w).failure.?);
+    _ = w.requestCopy(0, 3);
+    try std.testing.expectEqual(error.ClipboardContainsNul, awaitCopy(w).failure.?);
+    _ = w.requestCopy(0, max_copy);
+    const generation = w.requestCopy(0, 2);
+    const result = awaitCopy(w);
+    try std.testing.expectEqual(generation, result.generation);
+    defer std.testing.allocator.free(result.bytes.?);
+    try std.testing.expectEqualStrings("ok", result.bytes.?);
+    const changed = try tmp.dir.openFile(io, "copy", .{ .mode = .write_only });
+    try changed.setLength(io, 1);
+    changed.close(io);
+    _ = w.requestCopy(0, 2);
+    try std.testing.expectEqual(error.FileChanged, awaitCopy(w).failure.?);
 }
