@@ -156,6 +156,19 @@ fn isBoundary(buffer: *const TextBuffer, offset: usize) bool {
 
 const testing = std.testing;
 
+fn allocationScenario(allocator: std.mem.Allocator) !void {
+    var plan = try SearchPlan.init(allocator, "Abé needle", true);
+    defer plan.deinit();
+    var buffer = try TextBuffer.init(allocator, "before abé needle after");
+    defer buffer.deinit();
+    try testing.expectEqual(@as(?usize, 7), plan.next(&buffer, .{ .start = 0, .end = buffer.len() }, 0));
+}
+
+test "search construction releases ownership at every allocation failure" {
+    try testing.checkAllAllocationFailures(testing.allocator, allocationScenario, .{});
+    try testing.expectError(error.InvalidUtf8, SearchPlan.init(testing.allocator, "\xff", false));
+}
+
 test "literal search handles overlaps ranges UTF-8 and ASCII case" {
     var buffer = try TextBuffer.init(testing.allocator, "ababa éÉ ABC");
     defer buffer.deinit();
