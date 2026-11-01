@@ -210,6 +210,13 @@ pub fn simulate(self: *App, spec: []const u8) !void {
 }
 
 fn resolve(self: *App, primary: keymap.Keystroke, alternate: ?keymap.Keystroke) !bool {
+    if (self.search_open and self.search_focused and self.replace_open and
+        std.mem.eql(u8, primary.key(), "tab") and !primary.ctrl and !primary.alt and !primary.super)
+    {
+        self.replace_focused = !self.replace_focused;
+        self.pending = .{};
+        return true;
+    }
     var path_buf: [6]keymap.Context = undefined;
     var ext_buf: [16]u8 = undefined;
     const path = commands.focusPath(self, &path_buf, &ext_buf);

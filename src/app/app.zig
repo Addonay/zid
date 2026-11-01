@@ -53,6 +53,10 @@ pub const App = struct {
     search_open: bool = false,
     search_focused: bool = false,
     search_input: LineInput = .{},
+    replace_input: LineInput = .{},
+    replace_open: bool = false,
+    replace_focused: bool = false,
+    search_case_sensitive: bool = true,
     search_doc: usize = std.math.maxInt(usize),
     search_revision: u64 = std.math.maxInt(u64),
     search_count: usize = 0,
@@ -387,7 +391,7 @@ pub const App = struct {
             },
             .none => if (self.keymap_editor_open) {
                 try modals.refilterKeymap(self);
-            } else if (self.search_open and self.search_focused) {
+            } else if (self.search_open and self.search_focused and !self.replace_focused) {
                 try self.updateSearch(true);
             },
         }
@@ -503,8 +507,9 @@ pub const App = struct {
     pub fn editorRect(self: *App) !Rect {
         var rect = try self.layout.rect(self.layout.editor);
         if (self.search_open and !self.keymap_editor_open) {
-            rect.y += 40;
-            rect.h = @max(0, rect.h - 40);
+            const height: f32 = if (self.replace_open) 76 else 40;
+            rect.y += height;
+            rect.h = @max(0, rect.h - height);
         }
         return rect;
     }
@@ -515,7 +520,7 @@ pub const App = struct {
         self.search_doc = self.workspace.active;
         self.search_revision = doc.revision;
         if (doc.large != null or doc.buffer.len() > 32 * 1024 * 1024 or self.search_input.text().len == 0) return;
-        var plan = try zid.search.SearchPlan.init(self.gpa, self.search_input.text(), false);
+        var plan = try zid.search.SearchPlan.init(self.gpa, self.search_input.text(), !self.search_case_sensitive);
         defer plan.deinit();
         if (select) {
             const start = doc.selection().start;
@@ -533,10 +538,24 @@ pub const App = struct {
     pub fn searchSelect(self: *App, direction: zid.find.Direction) !void {
         const doc = self.workspace.current();
         if (doc.large != null or doc.buffer.len() > 32 * 1024 * 1024 or self.search_input.text().len == 0) return;
-        var plan = try zid.search.SearchPlan.init(self.gpa, self.search_input.text(), false);
+        var plan = try zid.search.SearchPlan.init(self.gpa, self.search_input.text(), !self.search_case_sensitive);
         defer plan.deinit();
         _ = try zid.find.selectMatch(doc, &plan, direction, true);
         try self.revealCursor();
+        try self.updateSearch(false);
+    }
+    pub fn searchReplace(self: *App) !void {
+        const doc = self.workspace.current();
+        if (doc.preview_only or doc.large != null or doc.buffer.len() > 32 * 1024 * 1024 or self.search_input.text().len == 0) return;
+        var plan = try zid.search.SearchPlan.init(self.gpa, self.search_input.text(), !self.search_case_sensitive);
+        defer plan.deinit();
+        if (try zid.find.replaceCurrent(doc, &plan, self.replace_input.text())) {
+            _ = try zid.find.selectMatch(doc, &plan, .next, true);
+            try self.revealCursor();
+        } else {
+            _ = try zid.find.selectMatch(doc, &plan, .next, true);
+            try self.revealCursor();
+        }
         try self.updateSearch(false);
     }
     pub fn pageLines(self: *App) usize {
@@ -783,9 +802,8 @@ pub const App = struct {
         }
         const editor = try self.layout.rect(self.layout.editor);
         if (editor.contains(mx, my)) {
-            if (self.search_open and my < editor.y + 40) {
-                self.search_focused = true;
-                self.panel_focus = false;
+            if (self.search_open and my < editor.y + (if (self.replace_open) @as(f32, 76) else 40)) {
+                try @import("views/buffer_search.zig").click(self, editor, mx, my);
                 return;
             }
             self.search_focused = false;

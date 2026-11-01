@@ -40,6 +40,10 @@ pub const Command = enum {
     @"tab_switcher::Toggle",
     @"project_panel::ToggleFocus",
     @"buffer_search::Deploy",
+    @"buffer_search::DeployReplace",
+    @"search::ToggleReplace",
+    @"search::ReplaceNext",
+    @"search::ToggleCaseSensitive",
     @"buffer_search::Dismiss",
     @"search::SelectNextMatch",
     @"search::SelectPreviousMatch",
@@ -156,7 +160,7 @@ pub fn focus(app: *const App) Focus {
 /// The single-line input that receives editor actions when a modal or view has focus.
 pub fn lineInput(app: *App) ?*LineInput {
     return switch (focus(app)) {
-        .buffer_search => &app.search_input,
+        .buffer_search => if (app.replace_focused) &app.replace_input else &app.search_input,
         .picker => &app.modal.picker.input,
         .go_to_line => &app.modal.go_to_line.input,
         .keymap_editor => &app.keymap_view.search,
@@ -184,7 +188,7 @@ pub fn focusPath(app: *App, buf: *[6]keymap.Context, ext_buf: *[16]u8) []keymap.
         .buffer_search => {
             buf[n] = .{ .name = "Pane" };
             n += 1;
-            buf[n] = .{ .name = "BufferSearchBar" };
+            buf[n] = .{ .name = "BufferSearchBar", .flags = if (app.replace_focused) &.{"in_replace"} else &.{} };
             n += 1;
             buf[n] = .{ .name = "Editor", .pairs = single_line };
             n += 1;
@@ -257,7 +261,9 @@ pub fn available(app: *App, c: Command) bool {
         else => false,
     };
     return switch (c) {
-        .@"buffer_search::Deploy" => f == .editor or f == .buffer_search,
+        .@"buffer_search::Deploy", .@"buffer_search::DeployReplace" => f == .editor or f == .buffer_search,
+        .@"search::ToggleReplace", .@"search::ToggleCaseSensitive" => f == .buffer_search,
+        .@"search::ReplaceNext" => f == .buffer_search and app.replace_open and !app.docPreview() and app.workspace.current().large == null,
         .@"buffer_search::Dismiss", .@"search::FocusSearch" => f == .buffer_search,
         .@"search::SelectNextMatch", .@"search::SelectPreviousMatch" => f == .editor or f == .buffer_search,
         .@"project_panel::CollapseSelectedEntry", .@"project_panel::ExpandSelectedEntry", .@"project_panel::CollapseAllEntries", .@"project_panel::Open" => f == .project_panel,
@@ -318,10 +324,29 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
         .@"buffer_search::Deploy", .@"search::FocusSearch" => {
             app.search_open = true;
             app.search_focused = true;
+            app.replace_focused = false;
             app.panel_focus = false;
             app.search_input.selectAll();
             try app.updateSearch(false);
         },
+        .@"buffer_search::DeployReplace" => {
+            app.search_open = true;
+            app.replace_open = true;
+            app.replace_focused = false;
+            app.search_focused = true;
+            app.panel_focus = false;
+            app.search_input.selectAll();
+            try app.updateSearch(false);
+        },
+        .@"search::ToggleReplace" => {
+            app.replace_open = !app.replace_open;
+            app.replace_focused = false;
+        },
+        .@"search::ToggleCaseSensitive" => {
+            app.search_case_sensitive = !app.search_case_sensitive;
+            try app.updateSearch(true);
+        },
+        .@"search::ReplaceNext" => try app.searchReplace(),
         .@"buffer_search::Dismiss" => {
             app.search_open = false;
             app.search_focused = false;
