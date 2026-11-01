@@ -757,16 +757,16 @@ pub const App = struct {
         try self.renderer.rect(0, status.y, status.w, 1, t.border);
         try self.renderer.icon(@import("icons").svg("panel_left"), 12, status.y + 5, 16, t.muted);
         try self.renderer.icon(@import("icons").svg("ui:settings"), status.w - 26, status.y + 5, 16, t.muted);
-        if (self.workspace.current().large != null) {
-            try self.renderer.textUi("Large file: read-only byte view", 52, status.y + 18, t.text);
+        if (self.message_len > 0) {
+            self.clip(.{ .x = 52, .y = status.y, .w = @max(0, status.w - 480), .h = status.h });
+            try self.renderer.textUi(self.message[0..self.message_len], 52, status.y + 18, t.text);
+            self.renderer.setClip(null);
+        } else if (self.workspace.current().large != null) {
+            try self.renderer.textUi("Large file: read-only", 52, status.y + 18, t.text);
         } else if (docPreview(self)) {
             try self.renderer.textUi("Read-only preview: line exceeds 64 KiB", 52, status.y + 18, t.error_text);
         } else if (self.renderer.degraded) {
             try self.renderer.textUi("Some glyphs replaced: font/atlas limit", 52, status.y + 18, t.error_text);
-        } else if (self.message_len > 0) {
-            self.clip(.{ .x = 52, .y = status.y, .w = @max(0, status.w - 480), .h = status.h });
-            try self.renderer.textUi(self.message[0..self.message_len], 52, status.y + 18, t.text);
-            self.renderer.setClip(null);
         }
         const doc = self.workspace.current();
         const lang = syntax.Language.fromPath(doc.path orelse "");
