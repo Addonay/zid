@@ -28,22 +28,44 @@ pub const Document = struct {
         offset: u64 = 0,
         anchor: u64 = 0,
         expected_copy: ?u64 = null,
-        extend_pending: bool = false,
         failure: ?anyerror = null,
         requested_offset: ?u64 = null,
         generation: u64 = 0,
         line_pending: bool = false,
-        relative_pending: ?i64 = null,
+        active_extend: bool = false,
+        queue: [256]Intent = undefined,
+        queue_len: usize = 0,
         needs_redraw: bool = true,
         last_indexed: u64 = 0,
         last_loading: bool = true,
         last_line: ?u64 = null,
+        visible_origin: u64 = 0,
+        visible_end: u64 = 0,
 
-        pub fn poll(self: *LargeState, out: []u8) @import("../text/large_worker.zig").Snapshot {
-            if (!self.line_pending and self.requested_offset != self.offset) {
-                self.generation = self.worker.requestWindow(self.offset);
-                self.requested_offset = self.offset;
+        const Intent = union(enum) {
+            lines: struct { count: i64, extend: bool },
+            boundary: struct { which: @import("../text/large_worker.zig").Boundary, extend: bool },
+            byte: struct { direction: i8, extend: bool },
+        };
+
+        fn window(self: *LargeState, origin: u64) void {
+            self.requested_offset = origin;
+            self.generation = self.worker.requestWindow(origin);
+            self.needs_redraw = true;
+        }
+        fn follow(self: *LargeState) void {
+            // Include the byte immediately before a forward selection endpoint.
+            const target = if (self.offset > self.anchor) self.offset - 1 else self.offset;
+            const origin = @min(target, self.size -| 1);
+            const snap = self.worker.snapshot(&.{});
+            if (!snap.loading and snap.offset == self.visible_origin and target >= self.visible_origin and target < self.visible_end) {
+                self.needs_redraw = true;
+                return;
             }
+            self.window(origin);
+        }
+        pub fn poll(self: *LargeState, out: []u8) @import("../text/large_worker.zig").Snapshot {
+            if (self.requested_offset == null and !self.line_pending) self.window(0);
             const snapshot = self.worker.snapshot(out);
             const failure: ?anyerror = snapshot.index_error orelse snapshot.request_error;
             if (snapshot.indexed_bytes != self.last_indexed or snapshot.loading != self.last_loading or snapshot.first_line != self.last_line or failure != self.failure) self.needs_redraw = true;
@@ -51,15 +73,14 @@ pub const Document = struct {
             self.last_loading = snapshot.loading;
             self.last_line = snapshot.first_line;
             self.failure = failure;
-            if (!snapshot.loading and snapshot.generation == self.generation) {
-                if (snapshot.request_error == null) {
-                    if (self.offset != snapshot.offset) self.needs_redraw = true;
-                    self.offset = snapshot.offset;
-                    if (!self.extend_pending) self.anchor = self.offset;
-                    self.requested_offset = snapshot.offset;
-                }
+            if (self.line_pending and !snapshot.loading and snapshot.generation == self.generation) {
                 self.line_pending = false;
-                self.relative_pending = null;
+                if (snapshot.request_error == null) {
+                    self.offset = snapshot.offset;
+                    if (!self.active_extend) self.anchor = self.offset;
+                    self.needs_redraw = true;
+                    self.advance();
+                } else self.queue_len = 0;
             }
             return snapshot;
         }
@@ -70,50 +91,89 @@ pub const Document = struct {
         pub fn selection(self: *const LargeState) struct { start: u64, end: u64 } {
             return .{ .start = @min(self.anchor, self.offset), .end = @max(self.anchor, self.offset) };
         }
-        /// Supersedes preview navigation and restores both byte endpoints.
         pub fn restoreSelection(self: *LargeState, anchor: u64, offset: u64) void {
             self.move(offset, true);
             self.anchor = @min(anchor, self.size);
+            self.follow();
         }
+        /// Absolute navigation supersedes all pending intentions.
         pub fn move(self: *LargeState, offset: u64, extend: bool) void {
             self.cancelCopy();
-            self.offset = @min(offset, self.size);
-            self.extend_pending = extend;
-            if (!extend) self.anchor = self.offset;
-            self.generation = self.worker.requestWindow(self.offset);
-            self.requested_offset = self.offset;
+            self.queue_len = 0;
             self.line_pending = false;
-            self.relative_pending = null;
-            self.needs_redraw = true;
+            self.offset = @min(offset, self.size);
+            if (!extend) self.anchor = self.offset;
+            self.follow();
+        }
+        pub fn selectAll(self: *LargeState) void {
+            self.cancelCopy();
+            self.queue_len = 0;
+            self.line_pending = false;
+            self.anchor = 0;
+            self.offset = self.size;
+            // Supersede a pending navigation without moving the viewport.
+            self.window(self.worker.snapshot(&.{}).offset);
         }
         pub fn copy(self: *LargeState) !void {
             self.cancelCopy();
-            if (self.line_pending) return error.LargeFileNavigationPending;
+            if (self.line_pending or self.queue_len != 0) return error.LargeFileNavigationPending;
             const sel = self.selection();
             if (sel.start != sel.end) self.expected_copy = self.worker.requestCopy(sel.start, sel.end);
         }
         pub fn requestLine(self: *LargeState, line: u64) void {
             self.cancelCopy();
-            self.extend_pending = false;
+            self.queue_len = 0;
+            self.active_extend = false;
             self.generation = self.worker.requestLine(line);
             self.line_pending = true;
-            self.relative_pending = null;
         }
-        pub fn moveLines(self: *LargeState, lines: i64) void {
-            if (lines == 0) return;
+        fn enqueue(self: *LargeState, intent: Intent) !void {
             self.cancelCopy();
-            self.extend_pending = false;
-            const total = (self.relative_pending orelse 0) +| lines;
-            self.generation = self.worker.requestRelative(self.offset, total);
-            self.line_pending = true;
-            self.relative_pending = total;
+            if (self.queue_len == self.queue.len) return error.LargeFileNavigationQueueFull;
+            self.queue[self.queue_len] = intent;
+            self.queue_len += 1;
+            if (!self.line_pending) self.advance();
         }
-        pub fn moveBoundary(self: *LargeState, which: @import("../text/large_worker.zig").Boundary, extend: bool) void {
-            self.cancelCopy();
-            self.extend_pending = extend;
-            self.generation = self.worker.requestBoundary(self.offset, which);
-            self.line_pending = true;
-            self.relative_pending = null;
+        fn advance(self: *LargeState) void {
+            while (self.queue_len > 0) {
+                const intent = self.queue[0];
+                self.queue_len -= 1;
+                std.mem.copyForwards(Intent, self.queue[0..self.queue_len], self.queue[1..][0..self.queue_len]);
+                switch (intent) {
+                    .lines => |n| {
+                        self.active_extend = n.extend;
+                        self.generation = self.worker.requestRelative(self.offset, n.count);
+                        self.line_pending = true;
+                        return;
+                    },
+                    .boundary => |v| {
+                        self.active_extend = v.extend;
+                        self.generation = self.worker.requestBoundary(self.offset, v.which);
+                        self.line_pending = true;
+                        return;
+                    },
+                    .byte => |v| {
+                        const sel = self.selection();
+                        self.offset = if (!v.extend and sel.start != sel.end)
+                            (if (v.direction < 0) sel.start else sel.end)
+                        else if (v.direction < 0) self.offset -| 1 else @min(self.size, self.offset +| 1);
+                        if (!v.extend) self.anchor = self.offset;
+                    },
+                }
+            }
+            self.follow();
+        }
+        pub fn moveLines(self: *LargeState, lines: i64) !void {
+            if (lines != 0) try self.enqueue(.{ .lines = .{ .count = lines, .extend = false } });
+        }
+        pub fn selectLines(self: *LargeState, lines: i64) !void {
+            if (lines != 0) try self.enqueue(.{ .lines = .{ .count = lines, .extend = true } });
+        }
+        pub fn moveBoundary(self: *LargeState, which: @import("../text/large_worker.zig").Boundary, extend: bool) !void {
+            try self.enqueue(.{ .boundary = .{ .which = which, .extend = extend } });
+        }
+        pub fn moveByte(self: *LargeState, direction: i8, extend: bool) !void {
+            try self.enqueue(.{ .byte = .{ .direction = direction, .extend = extend } });
         }
     };
 
@@ -559,16 +619,18 @@ test "large state queues relative movements and resolves boundaries" {
     defer worker.destroy();
     var state: Document.LargeState = .{ .worker = worker, .size = 8 };
     _ = state.poll(&.{});
-    state.moveLines(1);
-    state.moveLines(2);
+    try state.moveLines(1);
+    try state.moveLines(2);
+    worker.waitForRequest(state.generation);
+    _ = state.poll(&.{});
     worker.waitForRequest(state.generation);
     _ = state.poll(&.{});
     try std.testing.expectEqual(@as(u64, 6), state.offset);
-    state.moveLines(-1);
+    try state.moveLines(-1);
     worker.waitForRequest(state.generation);
     _ = state.poll(&.{});
     try std.testing.expectEqual(@as(u64, 4), state.offset);
-    state.moveBoundary(.end, false);
+    try state.moveBoundary(.end, false);
     worker.waitForRequest(state.generation);
     _ = state.poll(&.{});
     try std.testing.expectEqual(@as(u64, 5), state.offset);
@@ -588,7 +650,7 @@ test "large byte selection survives window and boundary completion and invalidat
     _ = state.poll(&.{});
     try std.testing.expectEqual(@as(u64, 2), state.selection().start);
     try std.testing.expectEqual(@as(u64, 3), state.selection().end);
-    state.moveBoundary(.end, true);
+    try state.moveBoundary(.end, true);
     worker.waitForRequest(state.generation);
     _ = state.poll(&.{});
     try std.testing.expectEqual(@as(u64, 2), state.anchor);
@@ -615,4 +677,55 @@ test "restoring large selection supersedes preview and survives publication" {
     _ = state.poll(&.{});
     try std.testing.expectEqual(@as(u64, 1), state.anchor);
     try std.testing.expectEqual(@as(u64, 4), state.offset);
+}
+
+test "large navigation composes mixed intentions and preserves viewport for select all" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "mixed", .data = "abc\nde\nfghi\n" });
+    const worker = try @import("../text/large_worker.zig").Worker.createIn(std.testing.allocator, io, tmp.dir, "mixed");
+    defer worker.destroy();
+    var state: Document.LargeState = .{ .worker = worker, .size = 12 };
+    _ = state.poll(&.{});
+    try state.moveLines(1);
+    try state.moveBoundary(.end, false);
+    while (state.line_pending) {
+        worker.waitForRequest(state.generation);
+        _ = state.poll(&.{});
+    }
+    try std.testing.expectEqual(@as(u64, 6), state.offset);
+    state.move(0, false);
+    try state.moveBoundary(.end, false);
+    try state.moveLines(1);
+    while (state.line_pending) {
+        worker.waitForRequest(state.generation);
+        _ = state.poll(&.{});
+    }
+    try std.testing.expectEqual(@as(u64, 4), state.offset);
+    try state.moveBoundary(.end, true);
+    try state.moveByte(-1, true);
+    try state.selectLines(-1);
+    try state.moveBoundary(.end, true);
+    while (state.line_pending) {
+        worker.waitForRequest(state.generation);
+        _ = state.poll(&.{});
+    }
+    try std.testing.expectEqual(@as(u64, 4), state.anchor);
+    try std.testing.expectEqual(@as(u64, 3), state.offset);
+    state.move(0, false);
+    worker.waitForRequest(state.generation);
+    try state.moveByte(1, true);
+    worker.waitForRequest(state.generation);
+    var bytes: [32]u8 = undefined;
+    var snap = state.poll(&bytes);
+    try std.testing.expectEqual(@as(u64, 0), snap.offset);
+    try std.testing.expectEqual(@as(u64, 1), state.offset);
+    try std.testing.expectEqual(@as(u8, 'a'), bytes[0]);
+    state.selectAll();
+    worker.waitForRequest(state.generation);
+    snap = state.poll(&bytes);
+    try std.testing.expectEqual(@as(u64, 0), snap.offset);
+    try std.testing.expectEqual(@as(u64, 12), state.offset);
+    try std.testing.expect(snap.len > 0);
 }

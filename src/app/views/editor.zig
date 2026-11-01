@@ -120,6 +120,16 @@ fn drawLarge(self: *App) !void {
             try self.renderer.rect(x + sx, y - @as(f32, @floatFromInt(self.settings.font_size)), ex - sx + (if (decoded.selected_newline) @as(f32, 8) else 0), height, t.selection);
         }
         try self.renderer.text(text[0..decoded.written], x, y, t.editor_foreground);
+        if (self.focused and self.caret_visible and !self.panel_focus and self.dialog == .none and
+            large.offset >= origin and large.offset <= origin + decoded.consumed and
+            !(decoded.newline and large.offset == origin + decoded.consumed))
+        {
+            var prefix: [4096]u8 = undefined;
+            const byte_count: usize = @intCast(@min(large.offset - origin, decoded.consumed));
+            const caret = zid.large_display.decodeLine(data[start..][0..byte_count], &prefix, self.settings.tab_size, true);
+            const cx = x + self.renderer.width(prefix[0..caret.written]);
+            try self.renderer.rect(cx, y - @as(f32, @floatFromInt(self.settings.font_size)), 2, height, t.editor_foreground);
+        }
         self.clip(e);
         if (decoded.truncated) try self.renderer.text("…", e.x + e.w - 28, y, t.muted);
         if (newline) {
@@ -127,6 +137,8 @@ fn drawLarge(self: *App) !void {
         }
         if (snapshot.offset + at > snapshot.indexed_bytes) line = null;
     }
+    large.visible_origin = snapshot.offset;
+    large.visible_end = snapshot.offset + at;
 }
 pub fn drawRun(self: *App, bytes: []const u8, start: usize, end: usize, x: f32, baseline: f32, color: [4]u8, e: Rect, italic: bool) !void {
     if (start >= end) return;

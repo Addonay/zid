@@ -74,3 +74,9 @@ visible display row. The large-file viewer similarly paints per-row backgrounds
 behind text, but maps byte selections through its bounded decoder instead of
 implementing Zed's display map. Partial encoded characters select the complete
 displayed replacement or character; a selected line ending gets a small marker.
+
+The large-file viewer keeps the selection head separate from its visible byte
+window, following the distinction between Zed's selection state and scroll
+anchor in `crates/editor/src/scroll.rs` and row selection painting in
+`crates/editor/src/element.rs`. Its asynchronous navigation serializes relative
+intentions; it remains byte-based and does not provide Zed's display mapping.

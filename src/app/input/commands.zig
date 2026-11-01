@@ -228,7 +228,10 @@ pub fn available(app: *App, c: Command) bool {
     const f = focus(app);
     if (f == .settings or f == .path_dialog) return false;
     if (isEditor(c)) return switch (f) {
-        .editor => true,
+        .editor => if (app.workspace.current().large == null) true else switch (c) {
+            .@"editor::MoveToBeginning", .@"editor::MoveToEnd", .@"editor::SelectToBeginning", .@"editor::SelectToEnd", .@"editor::SelectAll", .@"editor::Copy", .@"editor::Cancel", .@"editor::MoveUp", .@"editor::LineUp", .@"editor::MoveDown", .@"editor::LineDown", .@"editor::MovePageUp", .@"editor::PageUp", .@"editor::MovePageDown", .@"editor::PageDown", .@"editor::MoveToBeginningOfLine", .@"editor::SelectToBeginningOfLine", .@"editor::MoveToEndOfLine", .@"editor::SelectToEndOfLine", .@"editor::MoveLeft", .@"editor::MoveRight", .@"editor::SelectLeft", .@"editor::SelectRight" => true,
+            else => false,
+        },
         .picker, .go_to_line, .keymap_editor => lineInputCommand(c),
         else => false,
     };
@@ -267,29 +270,26 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
     if (doc.large != null and isEditor(c)) {
         const l = &doc.large.?;
         const page: i64 = @intCast(app.pageLines());
-        const sel = l.selection();
         switch (c) {
             .@"editor::MoveToBeginning" => l.move(0, false),
             .@"editor::MoveToEnd" => l.move(l.size, false),
             .@"editor::SelectToBeginning" => l.move(0, true),
             .@"editor::SelectToEnd" => l.move(l.size, true),
-            .@"editor::SelectAll" => {
-                l.move(l.size, false);
-                l.anchor = 0;
-                l.extend_pending = true;
-            },
+            .@"editor::SelectAll" => l.selectAll(),
             .@"editor::Copy" => try l.copy(),
             .@"editor::Cancel" => l.move(l.offset, false),
-            .@"editor::MoveUp", .@"editor::LineUp" => l.moveLines(-1),
-            .@"editor::MoveDown", .@"editor::LineDown" => l.moveLines(1),
-            .@"editor::MovePageUp", .@"editor::PageUp" => l.moveLines(-page),
-            .@"editor::MovePageDown", .@"editor::PageDown" => l.moveLines(page),
-            .@"editor::MoveToBeginningOfLine", .@"editor::SelectToBeginningOfLine" => l.moveBoundary(.start, c == .@"editor::SelectToBeginningOfLine"),
-            .@"editor::MoveToEndOfLine", .@"editor::SelectToEndOfLine" => l.moveBoundary(.end, c == .@"editor::SelectToEndOfLine"),
-            .@"editor::MoveLeft" => l.move(if (sel.start != sel.end) sel.start else l.offset -| 1, false),
-            .@"editor::MoveRight" => l.move(if (sel.start != sel.end) sel.end else l.offset +| 1, false),
-            .@"editor::SelectLeft" => l.move(l.offset -| 1, true),
-            .@"editor::SelectRight" => l.move(l.offset +| 1, true),
+            .@"editor::SelectUp" => try l.selectLines(-1),
+            .@"editor::SelectDown" => try l.selectLines(1),
+            .@"editor::MoveUp", .@"editor::LineUp" => try l.moveLines(-1),
+            .@"editor::MoveDown", .@"editor::LineDown" => try l.moveLines(1),
+            .@"editor::MovePageUp", .@"editor::PageUp" => try l.moveLines(-page),
+            .@"editor::MovePageDown", .@"editor::PageDown" => try l.moveLines(page),
+            .@"editor::MoveToBeginningOfLine", .@"editor::SelectToBeginningOfLine" => try l.moveBoundary(.start, c == .@"editor::SelectToBeginningOfLine"),
+            .@"editor::MoveToEndOfLine", .@"editor::SelectToEndOfLine" => try l.moveBoundary(.end, c == .@"editor::SelectToEndOfLine"),
+            .@"editor::MoveLeft" => try l.moveByte(-1, false),
+            .@"editor::MoveRight" => try l.moveByte(1, false),
+            .@"editor::SelectLeft" => try l.moveByte(-1, true),
+            .@"editor::SelectRight" => try l.moveByte(1, true),
             else => return error.UnsupportedLargeFileCommand,
         }
         return;
