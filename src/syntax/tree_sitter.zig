@@ -1,37 +1,45 @@
-//! Minimal Zig bindings to the tree-sitter C API (v0.27.1), plus the grammar
+//! Thin Zig wrappers over the translate-c bindings to the tree-sitter C API
+//! (v0.27.1, `ts_api` module built from api.h by build.zig), plus the grammar
 //! entry points and the upstream highlight queries embedded by build.zig.
 //! No SDL/Zafi/rendering types live here; higher-level highlighting policy is
 //! `src/syntax/ts_highlight.zig` in the `zid` module.
 const std = @import("std");
+const api = @import("ts_api");
+
+/// C ABI structs (TSInput, TSNode, TSQueryMatch, ...) have the same layout as
+/// zid's local decls below; convert by casting through the address.
+fn castIn(comptime T: type, value: anytype) T {
+    return @as(*const T, @ptrCast(&value)).*;
+}
 
 pub const queries = @import("ts_queries");
 
 pub const Language = opaque {};
 pub const Parser = opaque {
     pub fn create() ?*Parser {
-        return ts_parser_new();
+        return @ptrCast(api.ts_parser_new());
     }
     pub fn destroy(self: *Parser) void {
-        ts_parser_delete(self);
+        api.ts_parser_delete(@ptrCast(self));
     }
     pub fn setLanguage(self: *Parser, language: *const Language) bool {
-        return ts_parser_set_language(self, language);
+        return api.ts_parser_set_language(@ptrCast(self), @ptrCast(language));
     }
     /// Parse `input` from the start; `old_tree` is ignored unless callers also
     /// report edits via ts_tree_edit (zid currently reparses whole documents).
     pub fn parse(self: *Parser, input: Input, old_tree: ?*const Tree) ?*Tree {
-        return ts_parser_parse(self, input, old_tree);
+        return @ptrCast(api.ts_parser_parse(@ptrCast(self), @ptrCast(old_tree), castIn(api.TSInput, input)));
     }
     pub fn parseString(self: *Parser, old_tree: ?*const Tree, string: []const u8) ?*Tree {
-        return ts_parser_parse_string(self, old_tree, string.ptr, @intCast(string.len));
+        return @ptrCast(api.ts_parser_parse_string(@ptrCast(self), @ptrCast(old_tree), string.ptr, @intCast(string.len)));
     }
 };
 pub const Tree = opaque {
     pub fn destroy(self: *Tree) void {
-        ts_tree_delete(self);
+        api.ts_tree_delete(@ptrCast(self));
     }
     pub fn rootNode(self: *const Tree) Node {
-        return ts_tree_root_node(self);
+        return castIn(Node, api.ts_tree_root_node(@ptrCast(self)));
     }
 };
 pub const Node = extern struct {
@@ -40,10 +48,10 @@ pub const Node = extern struct {
     tree: ?*const Tree,
 
     pub fn startByte(self: Node) u32 {
-        return ts_node_start_byte(self);
+        return api.ts_node_start_byte(castIn(api.TSNode, self));
     }
     pub fn endByte(self: Node) u32 {
-        return ts_node_end_byte(self);
+        return api.ts_node_end_byte(castIn(api.TSNode, self));
     }
 };
 pub const Point = extern struct { row: u32, column: u32 };
@@ -92,45 +100,45 @@ pub const Query = opaque {
     pub fn create(language: *const Language, source: []const u8) error{QueryFailed}!*Query {
         var error_offset: u32 = 0;
         var error_type: QueryError = .none;
-        return ts_query_new(language, source.ptr, @intCast(source.len), &error_offset, &error_type) orelse error.QueryFailed;
+        return @ptrCast(api.ts_query_new(@ptrCast(language), source.ptr, @intCast(source.len), &error_offset, @ptrCast(&error_type)) orelse return error.QueryFailed);
     }
     pub fn destroy(self: *Query) void {
-        ts_query_delete(self);
+        api.ts_query_delete(@ptrCast(self));
     }
     /// Capture name for `id` (the @name in the query), without the '@'.
     pub fn captureNameForId(self: *const Query, id: u32) []const u8 {
         var len: u32 = 0;
-        const ptr = ts_query_capture_name_for_id(self, id, &len);
+        const ptr = api.ts_query_capture_name_for_id(@ptrCast(self), id, &len);
         return if (ptr == null) "" else ptr[0..len];
     }
     /// Literal string value for `value_id` in predicates.
     pub fn stringValueForId(self: *const Query, id: u32) []const u8 {
         var len: u32 = 0;
-        const ptr = ts_query_string_value_for_id(self, id, &len);
+        const ptr = api.ts_query_string_value_for_id(@ptrCast(self), id, &len);
         return if (ptr == null) "" else ptr[0..len];
     }
     /// Predicate steps for `pattern_index`, each predicate starting with a
     /// `string` step (the operator) and terminated by a `done` step.
     pub fn predicatesForPattern(self: *const Query, pattern_index: u16) []const PredicateStep {
         var count: u32 = 0;
-        const ptr = ts_query_predicates_for_pattern(self, pattern_index, &count);
-        return if (ptr == null) &.{} else ptr[0..count];
+        const ptr: [*c]const api.TSQueryPredicateStep = api.ts_query_predicates_for_pattern(@ptrCast(self), pattern_index, &count);
+        return if (ptr == null) &.{} else @as([*]const PredicateStep, @ptrCast(ptr))[0..count];
     }
 };
 
 pub const QueryCursor = opaque {
     pub fn create() ?*QueryCursor {
-        return ts_query_cursor_new();
+        return @ptrCast(api.ts_query_cursor_new());
     }
     pub fn destroy(self: *QueryCursor) void {
-        ts_query_cursor_delete(self);
+        api.ts_query_cursor_delete(@ptrCast(self));
     }
     pub fn exec(self: *QueryCursor, query: *const Query, node: Node) void {
-        ts_query_cursor_exec(self, query, node);
+        api.ts_query_cursor_exec(@ptrCast(self), @ptrCast(query), castIn(api.TSNode, node));
     }
     /// Iterate matches; `match.captures` is valid for `capture_count` entries.
     pub fn nextMatch(self: *QueryCursor, match: *Match) bool {
-        return ts_query_cursor_next_match(self, match);
+        return api.ts_query_cursor_next_match(@ptrCast(self), @ptrCast(match));
     }
 };
 
@@ -143,21 +151,4 @@ pub extern fn tree_sitter_json() *const Language;
 pub extern fn tree_sitter_markdown() *const Language;
 pub extern fn tree_sitter_markdown_inline() *const Language;
 
-extern fn ts_parser_new() callconv(.c) ?*Parser;
-extern fn ts_parser_delete(parser: ?*Parser) callconv(.c) void;
-extern fn ts_parser_set_language(parser: ?*Parser, language: ?*const Language) callconv(.c) bool;
-extern fn ts_parser_parse(parser: ?*Parser, input: Input, old_tree: ?*const Tree) callconv(.c) ?*Tree;
-extern fn ts_parser_parse_string(parser: ?*Parser, old_tree: ?*const Tree, string: [*c]const u8, length: u32) callconv(.c) ?*Tree;
-extern fn ts_tree_delete(tree: ?*Tree) callconv(.c) void;
-extern fn ts_tree_root_node(tree: ?*const Tree) callconv(.c) Node;
-extern fn ts_node_start_byte(node: Node) callconv(.c) u32;
-extern fn ts_node_end_byte(node: Node) callconv(.c) u32;
-extern fn ts_query_new(language: ?*const Language, source: [*c]const u8, source_len: u32, error_offset: *u32, error_type: *QueryError) callconv(.c) ?*Query;
-extern fn ts_query_delete(query: ?*Query) callconv(.c) void;
-extern fn ts_query_capture_name_for_id(query: ?*const Query, id: u32, length: *u32) callconv(.c) [*c]const u8;
-extern fn ts_query_string_value_for_id(query: ?*const Query, id: u32, length: *u32) callconv(.c) [*c]const u8;
-extern fn ts_query_cursor_new() callconv(.c) ?*QueryCursor;
-extern fn ts_query_cursor_delete(cursor: ?*QueryCursor) callconv(.c) void;
-extern fn ts_query_cursor_exec(cursor: ?*QueryCursor, query: ?*const Query, node: Node) callconv(.c) void;
-extern fn ts_query_cursor_next_match(cursor: ?*QueryCursor, match: *Match) callconv(.c) bool;
-extern fn ts_query_predicates_for_pattern(query: ?*const Query, pattern_index: u32, step_count: *u32) callconv(.c) [*c]const PredicateStep;
+

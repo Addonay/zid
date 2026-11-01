@@ -78,6 +78,11 @@ default icon theme.
   `build.zig`, so the package is consumed as sources only (see `depRoot` in
   `build.zig`, which resolves `zig-pkg/<hash>/<top-dir>` without evaluating
   dependency build scripts).
+- **translate-c**: `ziglang/translate-c`, branch `zig-0.17.x` commit
+  `cfac21f3199b2b02ce3fd7db652aa456421fe4ab` (MIT), URL/hash-pinned. Zig 0.17's
+  replacement for `@cImport`/`b.addTranslateC`: `build.zig` translates
+  `tree_sitter/api.h` into the `ts_api` module that `src/syntax/tree_sitter.zig`
+  wraps, so the C API surface is generated instead of hand-declared.
 - **Grammars** (GitHub tag tarballs, URL/hash-pinned, each MIT):
   tree-sitter-zig 1.1.2 (`tree-sitter-grammars`), tree-sitter-c 0.24.2,
   tree-sitter-cpp 0.23.4, tree-sitter-python 0.25.0, tree-sitter-json 0.24.8
