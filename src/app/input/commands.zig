@@ -266,18 +266,31 @@ pub fn run(app: *App, c: Command, arg: ?std.json.Value) anyerror!void {
     const doc = app.workspace.current();
     if (doc.large != null and isEditor(c)) {
         const l = &doc.large.?;
+        switch (c) {
+            .@"editor::MoveToBeginning" => {
+                doc.largeNavigate(0);
+                return;
+            },
+            .@"editor::MoveToEnd" => {
+                doc.largeNavigate(l.size);
+                return;
+            },
+            else => {},
+        }
         const step: u64 = switch (c) {
+            .@"editor::MoveRight" => 1,
             .@"editor::MoveDown", .@"editor::LineDown" => 120,
             .@"editor::MovePageDown", .@"editor::PageDown" => 1200,
             else => 0,
         };
         const back: u64 = switch (c) {
+            .@"editor::MoveLeft" => 1,
             .@"editor::MoveUp", .@"editor::LineUp" => 120,
             .@"editor::MovePageUp", .@"editor::PageUp" => 1200,
             else => 0,
         };
         if (step == 0 and back == 0) return error.UnsupportedLargeFileCommand;
-        l.offset = @min(l.size, (l.offset -| back) +| step);
+        doc.largeNavigate((l.offset -| back) +| step);
         return;
     }
     if (doc.large != null and c == .@"workspace::SaveAs") return error.ReadOnlyLargeFile;
