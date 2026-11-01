@@ -158,8 +158,10 @@ pub fn parse(name: []const u8) ?Command {
 pub const Focus = enum { workspace, project_edit, editor, buffer_search, project_panel, picker, go_to_line, keymap_editor, onboarding, prompt, context_menu, settings, path_dialog };
 
 pub fn focus(app: *const App) Focus {
-    if (app.dialog == .settings) return .settings;
-    if (app.dialog != .none) return .path_dialog;
+    // Settings-window keys route straight to the settings view; a windowed
+    // settings session must not steal the main window's command context.
+    if (app.dialog == .settings and app.settings_window == null) return .settings;
+    if (app.dialog != .none and app.dialog != .settings) return .path_dialog;
     if (app.prompt != null) return .prompt;
     if (app.context_menu != null) return .context_menu;
     switch (app.modal) {

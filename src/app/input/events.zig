@@ -12,8 +12,66 @@ const keymap = @import("../keymap.zig");
 const commands = @import("commands.zig");
 const modals = @import("../views/modals.zig");
 const onboarding = @import("../views/onboarding.zig");
+/// Settings lives in its own window when `settings_window` is set.
+fn settingsWindowed(self: *App) bool {
+    return self.dialog == .settings and self.settings_window != null;
+}
+/// Routes events tagged with the settings window id to the settings view; the
+/// main window keeps behaving normally while the settings window is open.
+fn settingsEvent(self: *App, e: sdl.events.Event) !bool {
+    const sw = if (self.settings_window) |*sw| sw else return false;
+    const swid = sw.getId() catch return false;
+    const eid: ?sdl.video.WindowId = switch (e) {
+        .key_down => |v| v.window_id,
+        .text_input => |v| v.window_id,
+        .mouse_button_down => |v| v.window_id,
+        .mouse_button_up => |v| v.window_id,
+        .mouse_motion => |v| v.window_id,
+        .mouse_wheel => |v| v.window_id,
+        .window_focus_gained => |v| v.id,
+        .window_focus_lost => |v| v.id,
+        .window_close_requested => |v| v.id,
+        else => null,
+    };
+    if (eid == null or eid.? != swid) return false;
+    switch (e) {
+        .window_close_requested => self.closeSettings(),
+        .window_focus_gained => {
+            self.focused = true;
+            self.caret_visible = true;
+        },
+        .window_focus_lost => {
+            self.focused = false;
+            self.caret_visible = false;
+        },
+        .key_down => |kev| {
+            self.suppress_choice_text = false;
+            self.caret_visible = true;
+            self.last_blink = sdl.timer.getMillisecondsSinceInit();
+            if (kev.key) |key| try settings_dialog.handleKey(self, key);
+        },
+        .text_input => |input| {
+            settings_dialog.typeText(self, input.text);
+            self.caret_visible = true;
+            self.last_blink = sdl.timer.getMillisecondsSinceInit();
+        },
+        .mouse_button_down => |button| if (button.button == .left) {
+            self.mouse_x = button.x;
+            self.mouse_y = button.y;
+            try settings_dialog.handleClick(self, button.x, button.y);
+        },
+        .mouse_motion => |motion| {
+            self.mouse_x = motion.x;
+            self.mouse_y = motion.y;
+        },
+        .mouse_wheel => |wheel| settings_dialog.scroll(self, -wheel.scroll_y * 40),
+        else => {},
+    }
+    return true;
+}
 pub fn event(self: *App, e: sdl.events.Event) !void {
     const doc = self.workspace.currentOrNull();
+    if (try settingsEvent(self, e)) return;
     switch (e) {
         .window_focus_gained => {
             self.focused = true;
@@ -35,7 +93,7 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
             const key = key_event.key orelse return;
             self.caret_visible = true;
             self.last_blink = sdl.timer.getMillisecondsSinceInit();
-            if (self.dialog != .none) {
+            if (self.dialog != .none and !settingsWindowed(self)) {
                 try self.dialogKey(key);
                 return;
             }
@@ -68,7 +126,7 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
             if (commands.lineInput(self)) |line| {
                 line.insert(text);
                 try self.lineInputChanged();
-            } else if (self.dialog == .settings) settings_dialog.typeText(self, text) else if (self.dialog == .open or self.dialog == .save) try self.path_input.appendSlice(self.gpa, text) else if (self.dialog == .none and self.prompt == null and self.context_menu == null and !self.panel_focus and !onboarding.isActive(self)) {
+            } else if (self.dialog == .settings) settings_dialog.typeText(self, text) else if (self.dialog == .open or self.dialog == .save) try self.path_input.appendSlice(self.gpa, text) else if ((self.dialog == .none or settingsWindowed(self)) and self.prompt == null and self.context_menu == null and !self.panel_focus and !onboarding.isActive(self)) {
                 _ = self.dismissHover();
                 const active = doc orelse return;
                 try active.insert(text);
@@ -134,9 +192,9 @@ pub fn event(self: *App, e: sdl.events.Event) !void {
                         self.database.column_scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.database.column_scroll)) + delta, 0, @as(i64, @intCast(columns -| 1))));
                     } else self.database.scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.database.scroll)) + delta, 0, @as(i64, @intCast(table.rows().len -| 1))));
                 }
-            } else if (self.dialog == .settings) {
+            } else if (self.dialog == .settings and self.settings_window == null) {
                 settings_dialog.scroll(self, -wheel.scroll_y * 40);
-            } else if (self.dialog != .none) {} else if (modals.scrollModal(self, -wheel.scroll_y)) {} else if (panel.contains(mx, my)) {
+            } else if (self.dialog != .none and self.dialog != .settings) {} else if (modals.scrollModal(self, -wheel.scroll_y)) {} else if (panel.contains(mx, my)) {
                 self.panel_scroll = @intCast(std.math.clamp(@as(i64, @intCast(self.panel_scroll)) + delta, 0, @as(i64, @intCast(self.maxPanelScroll()))));
             } else if (self.keymap_editor_open) {
                 modals.scrollKeymap(self, -wheel.scroll_y);
@@ -313,7 +371,7 @@ pub fn simulate(self: *App, spec: []const u8) !void {
             }
             continue;
         }
-        if (self.dialog != .none) {
+        if (self.dialog != .none and !settingsWindowed(self)) {
             const key: sdl.keycode.Keycode = if (std.mem.eql(u8, token, "enter")) .return_key else std.meta.stringToEnum(sdl.keycode.Keycode, token) orelse return error.UnsupportedSimulatedDialogKey;
             try self.dialogKey(key);
             continue;
