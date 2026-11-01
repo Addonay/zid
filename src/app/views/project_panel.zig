@@ -1,10 +1,11 @@
-//! Zed-shaped project panel. Metrics follow Zed's `ListItem` with `ListItemSpacing::Dense`
-//! (comfortable entry spacing): 24px rows, 6px inner padding, 20px indent steps, 16px icon slot,
-//! 4px icon/label gap, 14px labels, muted icons, and per-depth indent guides at 15px + 20px·depth.
+//! Project tree geometry follows Zed's ListItem: 6px inner horizontal padding,
+//! 20px configured indent steps, 16px file icons, and 14px disclosure icons.
+//! The 24px row pitch is sized for the app's 14px UI label metrics.
 const std = @import("std");
 const App = @import("../app.zig").App;
 const Rect = @import("../layout.zig").Rect;
 const icons = @import("icons");
+const geometry = @import("geometry.zig");
 
 pub const row_h: f32 = 24;
 pub const top_pad: f32 = 4;
@@ -13,10 +14,29 @@ const indent: f32 = 20;
 const icon_size: f32 = 16;
 const gap: f32 = 4;
 const guide_offset: f32 = 15;
+const disclosure_size: f32 = 14;
+const min_scroll_thumb: f32 = 25;
 
 /// Rows that fit fully or partially in the panel body.
 pub fn visibleRows(panel_h: f32) usize {
-    return @intFromFloat(@max(0, panel_h - top_pad) / row_h);
+    return geometry.visibleRows(panel_h, top_pad, row_h);
+}
+
+/// Includes the final clipped row, so drawing and hit geometry agree at the viewport edge.
+pub fn drawnRows(panel_h: f32) usize {
+    return geometry.drawnRows(panel_h, top_pad, row_h);
+}
+
+pub fn rowY(panel_y: f32, slot: usize) f32 {
+    return geometry.rowY(panel_y, top_pad, slot, row_h);
+}
+
+pub fn contentX(panel_x: f32, depth: usize) f32 {
+    return geometry.contentX(panel_x, pad_x, depth, indent);
+}
+
+pub fn guideX(panel_x: f32, level: usize) f32 {
+    return geometry.guideX(panel_x, guide_offset, level, indent);
 }
 
 pub fn totalRows(self: *App) usize {
@@ -43,24 +63,29 @@ pub fn drawPanel(self: *App) !void {
 
     const total = totalRows(self);
     const fit = visibleRows(p.h);
+    const draw_count = drawnRows(p.h);
     const doc_path: []const u8 = self.workspace.current().path orelse "";
     const hovered_row: ?usize = if (body.contains(self.mouse_x, self.mouse_y)) rowAt(self, p, self.mouse_y) else null;
 
     var slot: usize = 0;
-    while (slot <= fit and self.panel_scroll + slot < total) : (slot += 1) {
+    while (slot < draw_count and self.panel_scroll + slot < total) : (slot += 1) {
         const row = self.panel_scroll + slot;
-        const y = p.y + top_pad + @as(f32, @floatFromInt(slot)) * row_h;
+        const y = rowY(p.y, slot);
 
         var depth: usize = 0;
         var name: []const u8 = std.fs.path.basename(self.workspace.root);
         var icon = self.fileIcon("");
         icon = @import("../icon_theme.zig").folder(self.settings.icon_theme, std.fs.path.basename(self.workspace.root), !self.project_collapsed);
+        var is_directory = true;
+        var is_collapsed = self.project_collapsed;
         var active = false;
         if (row > 0) {
             const e = self.project.entries.items[self.visible.items[row - 1]];
             depth = e.depth + 1;
             name = e.name;
             active = !e.directory and isActivePath(doc_path, e.path);
+            is_directory = e.directory;
+            is_collapsed = e.collapsed;
             icon = if (e.directory) @import("../icon_theme.zig").folder(self.settings.icon_theme, std.fs.path.basename(e.path), !e.collapsed) else self.fileIcon(e.path);
         }
 
@@ -75,12 +100,20 @@ pub fn drawPanel(self: *App) !void {
 
         if (self.settings.show_indent_guides and depth > 0) {
             for (0..depth) |level| {
-                const gx = p.x + guide_offset + @as(f32, @floatFromInt(level)) * indent;
+                const gx = guideX(p.x, level);
                 try self.renderer.rect(gx, y, 1, row_h, t.indent_guide);
             }
         }
 
-        const icon_x = p.x + pad_x + @as(f32, @floatFromInt(depth)) * indent;
+        const row_origin_x = p.x + @as(f32, @floatFromInt(depth)) * indent;
+        if (is_directory) {
+            // Zed positions the disclosure button one rem before the indented row;
+            // its 24px square centers the 14px chevron four pixels before row_origin_x.
+            const center_x = @max(p.x + disclosure_size / 2, row_origin_x - 4);
+            const chevron = if (is_collapsed) "ui:chevron_right" else "ui:chevron_down";
+            try self.renderer.icon(icons.svg(chevron), center_x - disclosure_size / 2, y + (row_h - disclosure_size) / 2, disclosure_size, t.muted);
+        }
+        const icon_x = contentX(p.x, depth);
         try self.drawIcon(icon, icon_x, y + (row_h - icon_size) / 2, icon_size, t.muted);
         try self.renderer.textUi(name, icon_x + icon_size + gap, y + 17, t.text);
     }
@@ -105,7 +138,7 @@ fn drawScrollbar(self: *App, body: Rect, total: usize, fit: usize) !void {
     if (total <= fit or fit == 0) return;
     const track_h = body.h - top_pad * 2;
     const ratio = @as(f32, @floatFromInt(fit)) / @as(f32, @floatFromInt(total));
-    const thumb_h = @max(24, track_h * ratio);
+    const thumb_h = @min(track_h, @max(min_scroll_thumb, track_h * ratio));
     const max_scroll: f32 = @floatFromInt(total - fit);
     const pos = @min(1, @as(f32, @floatFromInt(self.panel_scroll)) / max_scroll);
     const thumb_y = body.y + top_pad + (track_h - thumb_h) * pos;

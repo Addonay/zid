@@ -789,7 +789,7 @@ pub const App = struct {
             self.workspace.active = hit.index;
             self.panel_focus = false;
             self.keymap_editor_open = false;
-            if (mx > hit.rect.x + hit.rect.w - 24) try self.runCommand(.@"pane::CloseActiveItem");
+            if (@import("views/tabs.zig").closeHit(hit.rect, mx, my)) try self.runCommand(.@"pane::CloseActiveItem");
             return;
         };
         const panel = try self.layout.rect(self.layout.panel);

@@ -14,3 +14,7 @@ test {
 test {
     _ = @import("settings_search.zig");
 }
+
+test {
+    _ = @import("views/geometry.zig");
+}
