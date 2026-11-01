@@ -37,6 +37,26 @@ pub const Scan = struct {
         const len = document.buffer.len();
         const chunk_end = @min(len, self.chunk_start +| chunk_size);
         const scan_end = @min(len, chunk_end +| (plan.pattern.len - 1));
+        if (self.capped) {
+            // Once the displayed count saturates, retain navigation candidates
+            // with bounded scans instead of enumerating every remaining hit.
+            const range: search.Range = .{ .start = self.cursor, .end = scan_end };
+            if (plan.previous(&document.buffer, range, chunk_end)) |hit| self.last = hit;
+            const previous_limit = @min(self.selection_start, chunk_end);
+            if (previous_limit >= self.cursor) {
+                if (plan.previous(&document.buffer, range, previous_limit)) |hit| self.previous = hit;
+            }
+            const next_start = @max(self.selection_end, self.cursor);
+            if (self.next == null and next_start < chunk_end) {
+                if (plan.next(&document.buffer, range, next_start)) |hit| {
+                    if (hit < chunk_end) self.next = hit;
+                }
+            }
+            self.chunk_start = chunk_end;
+            self.cursor = chunk_end;
+            self.done = chunk_end == len;
+            return true;
+        }
         var hits: [128]usize = undefined;
         const batch = plan.enumerate(&document.buffer, .{ .start = self.chunk_start, .end = scan_end }, self.cursor, &hits);
         var passed_chunk = false;
