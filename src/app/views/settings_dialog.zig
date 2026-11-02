@@ -497,6 +497,7 @@ pub fn drawSettings(self: *App) !void {
         try self.renderer.icon(icons.svg("ui:close"), close.x + 4, close.y + 4, 16, if (hovered(self, close)) t.text else t.muted);
     }
 
+    if (windowed) try self.renderer.roundBox(r.x + 0.5, r.y - titlebar_h + 0.5, r.w - 1, r.h + titlebar_h - 1, 10, .{ 0, 0, 0, 0 }, t.border);
     // Expanded dropdown floats over everything, unclipped.
     if (self.settings_dropdown) if (focused) |index| if (items[index].kind == .dropdown) {
         if (findRow(&lay, index)) |row| try drawPopup(self, items[index].id, controlRect(self, items[index], rowRect(self, c, row)), r);
