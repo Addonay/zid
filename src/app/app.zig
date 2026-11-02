@@ -636,7 +636,7 @@ pub const App = struct {
             self.dialog = .settings;
             return;
         }
-        const window = sdl.video.Window.init("Settings — Zid", 900, 700, .{ .resizable = true, .borderless = true, .high_pixel_density = true }) catch return;
+        const window = sdl.video.Window.init("Settings — Zid", 900, 700, .{ .resizable = true, .borderless = true, .transparent = true, .high_pixel_density = true }) catch return;
         self.renderer.device.claimWindow(window) catch {
             window.deinit();
             return;
@@ -668,6 +668,7 @@ pub const App = struct {
         self.renderer.window = win.*;
         try self.renderer.begin(@intCast(width), @intCast(height), scale);
         errdefer self.renderer.abortFrame();
+        self.renderer.roundWindow(10);
         try @import("views/settings_dialog.zig").drawSettings(self);
         try self.renderer.end();
     }
